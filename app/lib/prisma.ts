@@ -1,17 +1,11 @@
-import { PrismaClient } from "@prisma/client/edge";
+import { PrismaClient } from "@prisma/client";
 import { createClient } from "@libsql/client";
 import { PrismaLibSql } from "@prisma/adapter-libsql";
 
-const adapter = new PrismaLibSql(createClient({
+const client = createClient({
   url: process.env.DATABASE_URL!,
-}));
+});
 
-declare global {
-  var prisma: PrismaClient | undefined;
-}
+const adapter = new PrismaLibSql(client);
 
-export const prisma =
-  global.prisma ??
-  new PrismaClient({ adapter });
-
-if (process.env.NODE_ENV !== "production") global.prisma = prisma;
+export const prisma = new PrismaClient({ adapter });
