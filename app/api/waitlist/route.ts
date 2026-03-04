@@ -1,5 +1,8 @@
 import { prisma } from "@/app/lib/prisma";
 import { NextResponse } from "next/server";
+import { Resend } from "resend";
+
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 export async function POST(req: Request) {
   try {
@@ -19,9 +22,16 @@ export async function POST(req: Request) {
       },
     });
 
+    // Send notification email
+    await resend.emails.send({
+      from: "notifications@facetquote.com",
+      to: "sunjay@facetquote.com",
+      subject: `New ${role === "shop" ? "supplier" : "designer"} signup: ${name || email}`,
+      text: `Name: ${name || "—"}\nEmail: ${email}\nCompany: ${company || "—"}\nRole: ${role}\nLocation: ${location || "—"}`,
+    });
+
     return NextResponse.json({ ok: true, id: entry.id });
   } catch (err: any) {
-    // P2002 = unique constraint (duplicate email) — still return ok to user
     if (err?.code === "P2002") {
       return NextResponse.json({ ok: true, duplicate: true });
     }
