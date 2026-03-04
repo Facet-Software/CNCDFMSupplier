@@ -402,8 +402,6 @@ export default function HomePage() {
 
           <div className="hero-inner">
             <div className="hero-meta-row">
-              <span className="hero-meta-badge">Now Accepting Members</span>
-              <div className="hero-meta-sep" />
               <span className="hero-meta-region">
                 <strong>Northeast Launch</strong>&nbsp;— expanding across regions
               </span>
