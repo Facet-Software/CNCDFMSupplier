@@ -6,7 +6,7 @@ import logging
 
 from sourcing.loader import load_step_file
 from sourcing.features.planar import get_planar_faces
-from sourcing.features.cylindrical import detect_cylindrical_features
+from sourcing.features.cylindrical import detect_cylindrical_features, detect_partial_holes
 from sourcing.features.thin_walls import detect_thin_walls, detect_hole_proximity_walls
 from sourcing.classify.holes import classify_through_blind, classify_hole_type
 from sourcing.analysis.setup import analyze_setups
@@ -117,7 +117,8 @@ def process_step_for_basics(filepath):
     classify_through_blind(shape, hole_profiles)
     for hp in hole_profiles:
         hp["hole_type"] = classify_hole_type(hp, shape)
-    hole_proximity_walls = detect_hole_proximity_walls(hole_profiles)
+    hole_proximity_walls  = detect_hole_proximity_walls(hole_profiles)
+    partial_holes         = detect_partial_holes(shape, hole_profiles)
 
     setup_analysis = analyze_setups(shape, planar_faces, hole_profiles, pockets=[], fillets=fillets,
                                     edge_to_faces=edge_to_faces, face_list=face_list)
@@ -135,7 +136,10 @@ def process_step_for_basics(filepath):
                                bbox_extents=bbox_extents,
                                face_list=face_list,
                                face_to_edges=face_to_edges,
-                               edge_to_faces=edge_to_faces)
+                               edge_to_faces=edge_to_faces,
+                               thin_walls=thin_walls,
+                               hole_proximity_walls=hole_proximity_walls,
+                               partial_holes=partial_holes)
 
     log_hole_summary(hole_profiles, shape)
     log_planar_face_summary(planar_faces)
@@ -155,6 +159,7 @@ def process_step_for_basics(filepath):
         "conical_chamfers":     conical_chamfers,
         "thin_walls":           thin_walls,
         "hole_proximity_walls": hole_proximity_walls,
+        "partial_holes":        partial_holes,
         "setup_analysis":       setup_analysis,
         "tool_access":          tool_access,
         "feature_counts":       feature_counts,

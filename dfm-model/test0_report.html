@@ -1,12 +1,17 @@
-# sourcing/reporting/html_report.py
-# Generates a self-contained single-page HTML report for suppliers.
-# No build step — uses React + Babel Standalone from CDN.
-
-import json
-import pathlib
-
-
-_COMPONENT_JSX = r"""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>test0.step — Facet Part Report</title>
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+</head>
+<body style="margin:0;background:#f8f7f4">
+  <div id="root"></div>
+  <script>window.__REPORT__ = {"filename": "test0.step", "analyzed_at": "2026-03-14T02:52:22.751827+00:00", "bounding_box": {"x": 120.0, "y": 80.0, "z": 40.0}, "bbox_volume_mm3": 384003.5, "solid_volume_mm3": 283419.6, "machined_volume_mm3": 100583.9, "material_removal_pct": 26.2, "planar_faces": 22, "machine_classification": "3-AXIS-STANDARD", "fixturing_count": 3, "fixturings": [{"id": 0, "label": "+Z", "setup_type": "3-axis-standard", "planar": 21, "floor": 4, "wall": 16, "holes": 0, "fillets": 1, "tool_changes": 2, "min_tool_dia": 6.0, "concerns": {"critical": 0, "warning": 7, "advisory": 1}}, {"id": 1, "label": "-Z", "setup_type": "3-axis-standard", "planar": 2, "floor": 2, "wall": 0, "holes": 0, "fillets": 0, "tool_changes": 1, "min_tool_dia": null, "concerns": {"critical": 0, "warning": 0, "advisory": 0}}, {"id": 2, "label": "+Y", "setup_type": "3-axis-standard", "planar": 0, "floor": 0, "wall": 0, "holes": 0, "fillets": 0, "tool_changes": 0, "min_tool_dia": null, "concerns": {"critical": 0, "warning": 0, "advisory": 0}}], "holes": [{"id": 1, "type": "through_counterbore", "radius_mm": 6.0, "depth_mm": 40.0, "cone_angle": null, "ld": 3.3, "face_idxs": [24, 22]}, {"id": 2, "type": "blind_with_tip", "radius_mm": 3.0, "depth_mm": 19.8, "cone_angle": 59.0, "ld": 3.3, "face_idxs": [26, 25]}, {"id": 3, "type": "blind_with_tip", "radius_mm": 1.5, "depth_mm": 15.9, "cone_angle": 59.0, "ld": 5.3, "face_idxs": [28, 27]}, {"id": 4, "type": "through", "radius_mm": 4.105, "depth_mm": 80.0, "cone_angle": null, "ld": 9.7, "face_idxs": [29]}], "dfm": [{"severity": "warning", "code": "hole_ld", "fixturing": "—", "message": "Hole 4: L/D = 9.7:1 (depth 80.0 mm / dia 8.21 mm) — extended tooling and pecking cycle required"}, {"severity": "warning", "code": "sharp_internal_corner", "fixturing": "+Z", "message": "Fixturing +Z: sharp internal corner between faces 6 and 9 — tool always leaves a radius, requires fillet or EDM"}, {"severity": "warning", "code": "sharp_internal_corner", "fixturing": "+Z", "message": "Fixturing +Z: sharp internal corner between faces 7 and 8 — tool always leaves a radius, requires fillet or EDM"}, {"severity": "warning", "code": "sharp_internal_corner", "fixturing": "+Z", "message": "Fixturing +Z: sharp internal corner between faces 8 and 9 — tool always leaves a radius, requires fillet or EDM"}, {"severity": "warning", "code": "sharp_internal_corner", "fixturing": "+Z", "message": "Fixturing +Z: sharp internal corner between faces 12 and 13 — tool always leaves a radius, requires fillet or EDM"}, {"severity": "warning", "code": "sharp_internal_corner", "fixturing": "+Z", "message": "Fixturing +Z: sharp internal corner between faces 12 and 15 — tool always leaves a radius, requires fillet or EDM"}, {"severity": "warning", "code": "sharp_internal_corner", "fixturing": "+Z", "message": "Fixturing +Z: sharp internal corner between faces 13 and 14 — tool always leaves a radius, requires fillet or EDM"}, {"severity": "warning", "code": "sharp_internal_corner", "fixturing": "+Z", "message": "Fixturing +Z: sharp internal corner between faces 14 and 15 — tool always leaves a radius, requires fillet or EDM"}, {"severity": "advisory", "code": "hole_ld", "fixturing": "—", "message": "Hole 2: L/D = 3.3:1 (depth 19.8 mm / dia 6.00 mm) — standard tooling reaches limit — verify spindle reach"}, {"severity": "advisory", "code": "hole_ld", "fixturing": "—", "message": "Hole 3: L/D = 5.3:1 (depth 15.9 mm / dia 3.00 mm) — standard tooling reaches limit — verify spindle reach"}, {"severity": "advisory", "code": "concave_fillet_tool_dia", "fixturing": "—", "message": "Smallest concave fillet r = 3.00 mm (face 11): max end mill dia ≤ 6.00 mm — constrains roughing pass tool selection"}, {"severity": "advisory", "code": "deep_feature", "fixturing": "+Z", "message": "Fixturing +Z, face 10: depth = 30.0 mm, min tool dia = 6.00 mm, L/D = 5.0"}]};</script>
+  <script type="text/babel">
 const R = window.__REPORT__;
 
 const HOLE_LABELS = {
@@ -34,37 +39,6 @@ function App() {
   const advs  = R.dfm.filter(d => d.severity === "advisory").length;
   const totalFlags = crits + warns + advs;
   const flagColor = crits > 0 ? SEV_COLOR.critical : warns > 0 ? SEV_COLOR.warning : "#16a34a";
-
-  // Group flags by code, preserving severity-sorted order
-  const SEV_RANK = { critical: 0, warning: 1, advisory: 2 };
-  const CODE_LABELS = {
-    hole_ld:                 "Deep Hole (L/D)",
-    small_hole:              "Small Hole",
-    ball_nose_required:      "Ball Nose Required",
-    concave_fillet_tool_dia: "Concave Fillet Tool",
-    sharp_internal_corner:   "Sharp Internal Corner",
-    deep_feature:            "Deep Feature",
-    thin_wall:               "Thin Wall",
-    thin_wall_hole_proximity:"Thin Wall — Hole Proximity",
-    partial_hole:            "Partial / Intersected Hole",
-  };
-
-  const groups = [];
-  const seen   = {};
-  for (const d of R.dfm) {
-    if (!seen[d.code]) {
-      seen[d.code] = { code: d.code, severity: d.severity, items: [] };
-      groups.push(seen[d.code]);
-    }
-    // Escalate group severity to worst member
-    if (SEV_RANK[d.severity] < SEV_RANK[seen[d.code].severity]) {
-      seen[d.code].severity = d.severity;
-    }
-    seen[d.code].items.push(d);
-  }
-
-  const [expanded, setExpanded] = React.useState({});
-  const toggle = (code) => setExpanded(e => ({ ...e, [code]: !e[code] }));
 
   return (
     <div style={{ background: "#f8f7f4", minHeight: "100vh", fontFamily: "'IBM Plex Sans', system-ui, sans-serif", color: "#1a1a1a" }}>
@@ -186,75 +160,21 @@ function App() {
         {totalFlags > 0 && (
           <div>
             <SectionHead>Manufacturing Flags</SectionHead>
-            <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-              {groups.map(g => {
-                const sev   = g.severity;
-                const open  = !!expanded[g.code];
-                const label = CODE_LABELS[g.code] || g.code.replace(/_/g, " ");
-                const multi = g.items.length > 1;
-                return (
-                  <div key={g.code} style={{ borderRadius: 5, overflow: "hidden", border: `1px solid ${SEV_BORDER[sev]}`, borderLeft: `3px solid ${SEV_COLOR[sev]}` }}>
-                    {/* GROUP HEADER — always visible, clickable if >1 item */}
-                    <div
-                      onClick={() => multi && toggle(g.code)}
-                      style={{
-                        display: "grid", gridTemplateColumns: "88px 1fr auto auto",
-                        gap: 12, alignItems: "center",
-                        background: SEV_BG[sev],
-                        padding: "10px 14px",
-                        cursor: multi ? "pointer" : "default",
-                        userSelect: "none",
-                      }}
-                    >
-                      <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.12em", color: SEV_COLOR[sev], textTransform: "uppercase" }}>{SEV_LABEL[sev]}</div>
-                      <div style={{ fontSize: 12, color: "#374151", lineHeight: 1.5 }}>
-                        <span style={{ fontWeight: 500 }}>{label}</span>
-                        {!multi && (
-                          <span style={{ color: "#6b7280", marginLeft: 8, fontFamily: "'IBM Plex Mono', monospace", fontSize: 10 }}>
-                            Fix. {g.items[0].fixturing}
-                          </span>
-                        )}
-                        {!open && multi && (
-                          <span style={{ color: "#9ca3af", marginLeft: 8, fontSize: 11 }}>
-                            — {g.items[0].message.length > 72 ? g.items[0].message.slice(0, 72) + "…" : g.items[0].message}
-                          </span>
-                        )}
-                      </div>
-                      {multi && (
-                        <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, color: SEV_COLOR[sev], background: SEV_BORDER[sev], padding: "2px 7px", borderRadius: 3, whiteSpace: "nowrap" }}>
-                          {g.items.length}
-                        </span>
-                      )}
-                      {multi && (
-                        <span style={{ fontSize: 11, color: "#9ca3af", width: 14, textAlign: "center" }}>{open ? "▲" : "▼"}</span>
-                      )}
-                    </div>
-                    {/* EXPANDED ITEMS */}
-                    {(open || !multi) && multi && (
-                      <div style={{ background: "#fff", borderTop: `1px solid ${SEV_BORDER[sev]}` }}>
-                        {g.items.map((d, i) => (
-                          <div key={i} style={{
-                            display: "grid", gridTemplateColumns: "80px 1fr",
-                            gap: 12, alignItems: "start",
-                            padding: "9px 14px",
-                            borderBottom: i < g.items.length - 1 ? `1px solid ${SEV_BORDER[sev]}` : "none",
-                            background: i % 2 === 0 ? "#fff" : "#fafafa",
-                          }}>
-                            <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, color: "#9ca3af", paddingTop: 1 }}>Fix. {d.fixturing}</div>
-                            <div style={{ fontSize: 11, color: "#374151", lineHeight: 1.55 }}>{d.message}</div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                    {/* SINGLE ITEM — show message inline below header */}
-                    {!multi && (
-                      <div style={{ background: "#fff", borderTop: `1px solid ${SEV_BORDER[sev]}`, padding: "9px 14px" }}>
-                        <div style={{ fontSize: 11, color: "#374151", lineHeight: 1.6 }}>{g.items[0].message}</div>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {R.dfm.map((d, i) => (
+                <div key={i} style={{
+                  display: "grid", gridTemplateColumns: "88px 80px 1fr",
+                  gap: 12, alignItems: "start",
+                  background: SEV_BG[d.severity],
+                  border: `1px solid ${SEV_BORDER[d.severity]}`,
+                  borderLeft: `3px solid ${SEV_COLOR[d.severity]}`,
+                  borderRadius: 5, padding: "10px 14px",
+                }}>
+                  <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.12em", color: SEV_COLOR[d.severity], paddingTop: 1, textTransform: "uppercase" }}>{SEV_LABEL[d.severity]}</div>
+                  <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, color: "#6b7280", paddingTop: 1 }}>Fix. {d.fixturing}</div>
+                  <div style={{ fontSize: 12, color: "#374151", lineHeight: 1.55 }}>{d.message}</div>
+                </div>
+              ))}
             </div>
           </div>
         )}
@@ -277,53 +197,6 @@ function App() {
 }
 
 ReactDOM.createRoot(document.getElementById("root")).render(<App />);
-"""
-
-
-def generate_report_html(report_dict, output_path=None):
-    """
-    Write a self-contained single-page HTML report for suppliers.
-
-    Parameters
-    ----------
-    report_dict : dict
-        Output of to_report_dict() from sourcing.pipeline.
-    output_path : str or None
-        Path to write the HTML file. If None, writes next to the STEP file
-        as <stem>_report.html. If a directory, writes inside it.
-
-    Returns
-    -------
-    str — absolute path of the written HTML file.
-    """
-    stem = pathlib.Path(report_dict["filename"]).stem
-
-    if output_path is None:
-        out = pathlib.Path(report_dict["filename"]).with_name(f"{stem}_report.html")
-    else:
-        out = pathlib.Path(output_path)
-        if out.is_dir():
-            out = out / f"{stem}_report.html"
-
-    report_json = json.dumps(report_dict, ensure_ascii=False)
-
-    html = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>{report_dict['filename']} — Facet Part Report</title>
-  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
-  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
-</head>
-<body style="margin:0;background:#f8f7f4">
-  <div id="root"></div>
-  <script>window.__REPORT__ = {report_json};</script>
-  <script type="text/babel">{_COMPONENT_JSX}</script>
+</script>
 </body>
-</html>"""
-
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(html, encoding="utf-8")
-    return str(out.resolve())
+</html>

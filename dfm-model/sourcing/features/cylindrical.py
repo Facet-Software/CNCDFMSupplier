@@ -10,7 +10,7 @@ import math
 import logging
 
 from OCC.Core.TopExp import TopExp_Explorer
-from OCC.Core.TopAbs import TopAbs_FACE, TopAbs_EDGE, TopAbs_OUT
+from OCC.Core.TopAbs import TopAbs_FACE, TopAbs_EDGE, TopAbs_OUT, TopAbs_IN, TopAbs_ON
 from OCC.Core.TopoDS import topods
 from OCC.Core.BRepAdaptor import BRepAdaptor_Surface, BRepAdaptor_Curve
 from OCC.Core import GeomAbs
@@ -376,3 +376,194 @@ def _group_hole_sections(holes, cones):
         groups.append(profile)
 
     return groups
+
+
+# ---------------------------------------------------------------------------
+# PARTIAL HOLE DETECTION
+# ---------------------------------------------------------------------------
+
+def _perp_basis(axis_dir):
+    """
+    Return two unit vectors (u, v) perpendicular to axis_dir.
+    Uses cross product with a non-parallel reference to build a stable basis.
+    """
+    ax, ay, az = axis_dir
+    # Pick a reference vector not parallel to the axis
+    if abs(ax) <= abs(ay) and abs(ax) <= abs(az):
+        ref = (1.0, 0.0, 0.0)
+    elif abs(ay) <= abs(az):
+        ref = (0.0, 1.0, 0.0)
+    else:
+        ref = (0.0, 0.0, 1.0)
+
+    # u = axis × ref, then normalise
+    ux = ay * ref[2] - az * ref[1]
+    uy = az * ref[0] - ax * ref[2]
+    uz = ax * ref[1] - ay * ref[0]
+    m  = math.sqrt(ux*ux + uy*uy + uz*uz)
+    ux, uy, uz = ux/m, uy/m, uz/m
+
+    # v = axis × u
+    vx = ay * uz - az * uy
+    vy = az * ux - ax * uz
+    vz = ax * uy - ay * ux
+
+    return (ux, uy, uz), (vx, vy, vz)
+
+
+def detect_partial_holes(shape, hole_profiles, n_angles=12, n_depths=3):
+    """
+    Detect holes that have been partially intersected by another feature —
+    a pocket, slot, or adjacent hole that breaks through the bore wall,
+    leaving the hole with missing wall material on one side.
+
+    Method
+    ------
+    For each hole, sample points at (radius + ε) at n_angles evenly spaced
+    around the full circumference and n_depths evenly spaced along the bore
+    depth (excluding the top 15% and bottom 15% to avoid end-cap geometry).
+
+    A complete bore has solid at all those points — the probe returns IN.
+    If any sample returns OUT (void), the wall is broken at that angle/depth.
+
+    severity
+    --------
+    critical  — > 25% of circumference exposed (significant breakthrough)
+    warning   — 1 sample exposed (minor clipping — may be intentional slot)
+
+    Returns
+    -------
+    List of dicts:
+        hole_idx          : int   — index into hole_profiles
+        face_idxs         : list  — face indices of the hole
+        rep_radius_mm     : float
+        depth_mm          : float — total bore depth
+        exposed_pct       : float — percentage of circumference samples that are void
+        exposed_angles_deg: list  — approximate angles (0–360°) where void was found
+        severity          : 'warning' | 'critical'
+    """
+    if not hole_profiles:
+        return []
+
+    from OCC.Core.Bnd import Bnd_Box
+    from OCC.Core.BRepBndLib import brepbndlib
+
+    bnd = Bnd_Box()
+    brepbndlib.Add(shape, bnd, True)
+    bnd.Enlarge(0.0)   # no gap
+    xmin, ymin, zmin, xmax, ymax, zmax = bnd.Get()
+
+    def _inside_bbox(px, py, pz, tol=1e-6):
+        """Return True if point is within part bounding box (with tiny tolerance)."""
+        return (xmin - tol <= px <= xmax + tol and
+                ymin - tol <= py <= ymax + tol and
+                zmin - tol <= pz <= zmax + tol)
+
+    classifier = BRepClass3d_SolidClassifier(shape)
+    tol        = 1e-6
+    results    = []
+
+    for hi, hp in enumerate(hole_profiles):
+        r_mm     = hp.get('rep_radius_mm') or 0.0
+        if r_mm < 0.1:
+            continue   # degenerate
+
+        r_model  = r_mm / 1000.0
+
+        v_min    = hp['v_min_overall']
+        v_max    = hp['v_max_overall']
+        v_span   = v_max - v_min
+
+        if v_span < 1e-9:
+            continue
+
+        # Build a list of (v_min, v_max, radius_model) for each cylinder section
+        # so we probe at the correct radius at each depth. This prevents false
+        # positives on counterbore/countersink holes where the wider shoulder
+        # would make a probe at rep_radius (smallest bore) land in void.
+        cyl_sections = [
+            (s['v_min'], s['v_max'], s['radius'])
+            for s in hp.get('sections', [])
+            if s.get('type') == 'cylinder'
+        ]
+
+        def _radius_at(v):
+            """Return the cylinder radius (model units) at depth v.
+            Falls back to rep_radius_mm if no section covers v."""
+            for sv_min, sv_max, sr in cyl_sections:
+                if sv_min - 1e-6 <= v <= sv_max + 1e-6:
+                    return sr
+            return r_model
+
+        gpa      = hp['get_point_along_axis']
+        ax, ay, az = hp['axis_direction']
+        u_basis, v_basis = _perp_basis((ax, ay, az))
+
+        # Sample depths — skip outermost 15% at each end to avoid end-cap noise
+        margin  = 0.15 * v_span
+        depths  = [v_min + margin + (v_span - 2*margin) * i / max(n_depths - 1, 1)
+                   for i in range(n_depths)]
+
+        void_samples   = []
+        total_samples  = 0
+
+        for v in depths:
+            # Use section-specific radius at this depth
+            r_at_v       = _radius_at(v)
+            probe_offset = max(r_at_v * 0.20, 0.0008)   # ≥ 0.8mm in model units
+            probe_r      = r_at_v + probe_offset
+
+            axis_pt = gpa(v)
+            cx, cy, cz = axis_pt.X(), axis_pt.Y(), axis_pt.Z()
+
+            for k in range(n_angles):
+                angle_rad = 2.0 * math.pi * k / n_angles
+                cos_a, sin_a = math.cos(angle_rad), math.sin(angle_rad)
+
+                # Point at (radius + ε) from bore axis
+                px = cx + probe_r * (cos_a * u_basis[0] + sin_a * v_basis[0])
+                py = cy + probe_r * (cos_a * u_basis[1] + sin_a * v_basis[1])
+                pz = cz + probe_r * (cos_a * u_basis[2] + sin_a * v_basis[2])
+
+                classifier.Perform(gp_Pnt(px, py, pz), tol)
+                total_samples += 1
+
+                if classifier.State() == TopAbs_OUT:
+                    # Only count as a breach if the probe point is inside the
+                    # part bounding box — points outside the bbox are just
+                    # "outside the part" from a nearby outer face, not a
+                    # feature intersecting the bore.
+                    if _inside_bbox(px, py, pz):
+                        void_samples.append(round(math.degrees(angle_rad), 1))
+
+        if not void_samples:
+            continue
+
+        # Deduplicate angles (same angle at multiple depths → report once)
+        unique_angles = sorted(set(void_samples))
+        exposed_pct   = round(len(void_samples) / total_samples * 100, 1)
+        severity      = 'critical' if exposed_pct > 25.0 else 'warning'
+
+        depth_mm = round(
+            (hp.get('local_thickness_mm') or hp.get('total_height_mm') or 0.0),
+            1
+        )
+
+        results.append({
+            'hole_idx':           hi,
+            'face_idxs':          hp.get('face_idxs', []),
+            'rep_radius_mm':      round(r_mm, 3),
+            'depth_mm':           depth_mm,
+            'exposed_pct':        exposed_pct,
+            'exposed_angles_deg': unique_angles,
+            'severity':           severity,
+        })
+
+        logger.debug(
+            f"  Partial hole {hi} (faces {hp.get('face_idxs')}): "
+            f"r={r_mm:.2f}mm, {exposed_pct:.0f}% exposed, "
+            f"angles={unique_angles}, severity={severity}"
+        )
+
+    logger.info(f"Partial hole detection: {len(results)} partial holes found")
+    return results

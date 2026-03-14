@@ -526,8 +526,12 @@ def _hemisphere_set_cover(face_normals, hole_profiles, pockets, face_adjacency=N
     """
     # Coverage thresholds by source type.
     FACE_COVER_MIN   = -0.05   # walls (dot=0) reachable by side-milling
-    HOLE_COVER_MIN   =  0.90   # drill must be nearly on-axis (~26° max)
-    POCKET_COVER_MIN =  0.50   # access within ~60° of approach
+    # Derive from critical concern thresholds in config — a hole/pocket beyond
+    # its critical angle needs its OWN fixturing, not a warning in an existing one.
+    # Previously hardcoded at 0.90 (26°) and 0.50 (60°), which contradicted
+    # SETUP_HOLE_CRITICAL_DEG=15° and SETUP_POCKET_CRITICAL_DEG=35°.
+    HOLE_COVER_MIN   = math.cos(math.radians(SETUP_HOLE_CRITICAL_DEG))    # cos(15°)≈0.966
+    POCKET_COVER_MIN = math.cos(math.radians(SETUP_POCKET_CRITICAL_DEG))  # cos(35°)≈0.819
 
     def _face_covered(dot):        return dot >= FACE_COVER_MIN
     def _pocket_covered(dot):      return dot >= POCKET_COVER_MIN

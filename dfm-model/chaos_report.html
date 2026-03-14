@@ -1,12 +1,17 @@
-# sourcing/reporting/html_report.py
-# Generates a self-contained single-page HTML report for suppliers.
-# No build step — uses React + Babel Standalone from CDN.
-
-import json
-import pathlib
-
-
-_COMPONENT_JSX = r"""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>chaos.step — Facet Part Report</title>
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+</head>
+<body style="margin:0;background:#f8f7f4">
+  <div id="root"></div>
+  <script>window.__REPORT__ = {"filename": "chaos.step", "analyzed_at": "2026-03-14T03:47:13.856833+00:00", "bounding_box": {"x": 112.0, "y": 84.0, "z": 35.0}, "bbox_volume_mm3": 329283.3, "solid_volume_mm3": 267987.1, "machined_volume_mm3": 61296.1, "material_removal_pct": 18.6, "planar_faces": 30, "machine_classification": "3-AXIS-STANDARD", "fixturing_count": 2, "fixturings": [{"id": 0, "label": "+Z", "setup_type": "3-axis-standard", "planar": 26, "floor": 5, "wall": 20, "holes": 0, "fillets": 0, "tool_changes": 1, "min_tool_dia": 5.6, "concerns": {"critical": 0, "warning": 16, "advisory": 3}}, {"id": 1, "label": "+Y", "setup_type": "3-axis-standard", "planar": 1, "floor": 0, "wall": 1, "holes": 0, "fillets": 0, "tool_changes": 1, "min_tool_dia": null, "concerns": {"critical": 0, "warning": 0, "advisory": 0}}], "holes": [{"id": 1, "type": "through_countersink", "radius_mm": 2.8, "depth_mm": 35.0, "cone_angle": 45.0, "ld": 6.2, "face_idxs": [20, 9]}, {"id": 2, "type": "through", "radius_mm": 3.5, "depth_mm": 35.0, "cone_angle": null, "ld": 5.0, "face_idxs": [10]}, {"id": 3, "type": "through_counterbore", "radius_mm": 2.8, "depth_mm": 35.0, "cone_angle": null, "ld": 6.2, "face_idxs": [29, 11]}, {"id": 4, "type": "blind_flat", "radius_mm": 3.5, "depth_mm": 35.0, "cone_angle": null, "ld": 5.0, "face_idxs": [16]}, {"id": 5, "type": "blind_flat", "radius_mm": 3.5, "depth_mm": 35.0, "cone_angle": null, "ld": 5.0, "face_idxs": [17]}, {"id": 6, "type": "blind_flat", "radius_mm": 3.5, "depth_mm": 35.0, "cone_angle": null, "ld": 5.0, "face_idxs": [18]}, {"id": 7, "type": "through", "radius_mm": 2.8, "depth_mm": 35.0, "cone_angle": null, "ld": 6.2, "face_idxs": [19]}, {"id": 8, "type": "blind_flat", "radius_mm": 0.525, "depth_mm": 35.0, "cone_angle": null, "ld": 33.3, "face_idxs": [34]}, {"id": 9, "type": "through", "radius_mm": 2.8, "depth_mm": 84.0, "cone_angle": null, "ld": 15.0, "face_idxs": [35]}], "dfm": [{"severity": "critical", "code": "hole_ld", "fixturing": "—", "message": "Hole 9: L/D = 15.0:1 (depth 84.0 mm / dia 5.60 mm) — gun-drilling or EDM likely required"}, {"severity": "critical", "code": "thin_wall", "fixturing": "—", "message": "Thin wall region 1 (faces [24, 25]): 1.40 mm thick, aspect ratio 40.0:1 — deflection and chatter risk"}, {"severity": "critical", "code": "thin_wall_hole_proximity", "fixturing": "—", "message": "Thin web between holes 1 and 9: 3.50 mm wall, aspect ratio 10.0:1 — risk of breakthrough during drilling"}, {"severity": "critical", "code": "thin_wall_hole_proximity", "fixturing": "—", "message": "Thin web between holes 5 and 6: 1.40 mm wall, aspect ratio 14.0:1 — risk of breakthrough during drilling"}, {"severity": "warning", "code": "hole_ld", "fixturing": "—", "message": "Hole 1: L/D = 6.2:1 (depth 35.0 mm / dia 5.60 mm) — extended tooling and pecking cycle required"}, {"severity": "warning", "code": "hole_ld", "fixturing": "—", "message": "Hole 3: L/D = 6.2:1 (depth 35.0 mm / dia 5.60 mm) — extended tooling and pecking cycle required"}, {"severity": "warning", "code": "hole_ld", "fixturing": "—", "message": "Hole 7: L/D = 6.2:1 (depth 35.0 mm / dia 5.60 mm) — extended tooling and pecking cycle required"}, {"severity": "warning", "code": "sharp_internal_corner", "fixturing": "+Z", "message": "Fixturing +Z: sharp internal corner between faces 12 and 14 — tool always leaves a radius, requires fillet or EDM"}, {"severity": "warning", "code": "sharp_internal_corner", "fixturing": "+Z", "message": "Fixturing +Z: sharp internal corner between faces 12 and 13 — tool always leaves a radius, requires fillet or EDM"}, {"severity": "warning", "code": "sharp_internal_corner", "fixturing": "+Z", "message": "Fixturing +Z: sharp internal corner between faces 13 and 15 — tool always leaves a radius, requires fillet or EDM"}, {"severity": "warning", "code": "sharp_internal_corner", "fixturing": "+Z", "message": "Fixturing +Z: sharp internal corner between faces 14 and 15 — tool always leaves a radius, requires fillet or EDM"}, {"severity": "warning", "code": "sharp_internal_corner", "fixturing": "+Z", "message": "Fixturing +Z: sharp internal corner between faces 21 and 23 — tool always leaves a radius, requires fillet or EDM"}, {"severity": "warning", "code": "sharp_internal_corner", "fixturing": "+Z", "message": "Fixturing +Z: sharp internal corner between faces 21 and 22 — tool always leaves a radius, requires fillet or EDM"}, {"severity": "warning", "code": "sharp_internal_corner", "fixturing": "+Z", "message": "Fixturing +Z: sharp internal corner between faces 22 and 24 — tool always leaves a radius, requires fillet or EDM"}, {"severity": "warning", "code": "sharp_internal_corner", "fixturing": "+Z", "message": "Fixturing +Z: sharp internal corner between faces 23 and 24 — tool always leaves a radius, requires fillet or EDM"}, {"severity": "warning", "code": "sharp_internal_corner", "fixturing": "+Z", "message": "Fixturing +Z: sharp internal corner between faces 25 and 27 — tool always leaves a radius, requires fillet or EDM"}, {"severity": "warning", "code": "sharp_internal_corner", "fixturing": "+Z", "message": "Fixturing +Z: sharp internal corner between faces 25 and 26 — tool always leaves a radius, requires fillet or EDM"}, {"severity": "warning", "code": "sharp_internal_corner", "fixturing": "+Z", "message": "Fixturing +Z: sharp internal corner between faces 26 and 28 — tool always leaves a radius, requires fillet or EDM"}, {"severity": "warning", "code": "sharp_internal_corner", "fixturing": "+Z", "message": "Fixturing +Z: sharp internal corner between faces 27 and 28 — tool always leaves a radius, requires fillet or EDM"}, {"severity": "warning", "code": "sharp_internal_corner", "fixturing": "+Z", "message": "Fixturing +Z: sharp internal corner between faces 30 and 31 — tool always leaves a radius, requires fillet or EDM"}, {"severity": "warning", "code": "sharp_internal_corner", "fixturing": "+Z", "message": "Fixturing +Z: sharp internal corner between faces 30 and 32 — tool always leaves a radius, requires fillet or EDM"}, {"severity": "warning", "code": "sharp_internal_corner", "fixturing": "+Z", "message": "Fixturing +Z: sharp internal corner between faces 31 and 33 — tool always leaves a radius, requires fillet or EDM"}, {"severity": "warning", "code": "sharp_internal_corner", "fixturing": "+Z", "message": "Fixturing +Z: sharp internal corner between faces 32 and 33 — tool always leaves a radius, requires fillet or EDM"}, {"severity": "warning", "code": "partial_hole", "fixturing": "—", "message": "Hole 2 (⌀7.00 mm): bore wall intersected by another feature — 14% of circumference exposed (minor clipping). Confirm geometry is intentional."}, {"severity": "advisory", "code": "hole_ld", "fixturing": "—", "message": "Hole 8: L/D = 5.3:1 (depth 5.6 mm / dia 1.05 mm) — standard tooling reaches limit — verify spindle reach"}, {"severity": "advisory", "code": "small_hole", "fixturing": "—", "message": "Hole 8: dia = 1.050 mm — specialty tooling required, slower cycle time"}, {"severity": "advisory", "code": "deep_feature", "fixturing": "+Z", "message": "Fixturing +Z, face 3: depth = 16.8 mm, min tool dia = 5.60 mm, L/D = 3.0"}, {"severity": "advisory", "code": "deep_feature", "fixturing": "+Z", "message": "Fixturing +Z, face 4: depth = 16.8 mm, min tool dia = 5.60 mm, L/D = 3.0"}, {"severity": "advisory", "code": "deep_feature", "fixturing": "+Z", "message": "Fixturing +Z, face 7: depth = 24.5 mm, min tool dia = 5.60 mm, L/D = 4.4"}]};</script>
+  <script type="text/babel">
 const R = window.__REPORT__;
 
 const HOLE_LABELS = {
@@ -277,53 +282,6 @@ function App() {
 }
 
 ReactDOM.createRoot(document.getElementById("root")).render(<App />);
-"""
-
-
-def generate_report_html(report_dict, output_path=None):
-    """
-    Write a self-contained single-page HTML report for suppliers.
-
-    Parameters
-    ----------
-    report_dict : dict
-        Output of to_report_dict() from sourcing.pipeline.
-    output_path : str or None
-        Path to write the HTML file. If None, writes next to the STEP file
-        as <stem>_report.html. If a directory, writes inside it.
-
-    Returns
-    -------
-    str — absolute path of the written HTML file.
-    """
-    stem = pathlib.Path(report_dict["filename"]).stem
-
-    if output_path is None:
-        out = pathlib.Path(report_dict["filename"]).with_name(f"{stem}_report.html")
-    else:
-        out = pathlib.Path(output_path)
-        if out.is_dir():
-            out = out / f"{stem}_report.html"
-
-    report_json = json.dumps(report_dict, ensure_ascii=False)
-
-    html = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>{report_dict['filename']} — Facet Part Report</title>
-  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
-  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
-</head>
-<body style="margin:0;background:#f8f7f4">
-  <div id="root"></div>
-  <script>window.__REPORT__ = {report_json};</script>
-  <script type="text/babel">{_COMPONENT_JSX}</script>
+</script>
 </body>
-</html>"""
-
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(html, encoding="utf-8")
-    return str(out.resolve())
+</html>
