@@ -9,34 +9,21 @@ datasource db {
   provider = "sqlite"
 }
 
-model WaitlistEntry {
-  id        String   @id @default(cuid())
-  email     String   @unique
-  name      String?
-  company   String?
-  location  String?
-  role      String   // "designer" | "shop"
-  createdAt DateTime @default(now())
-}
-
 model UploadJob {
-  id               String   @id @default(cuid())
-  status           String   @default("received")
-  createdAt        DateTime @default(now())
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+  status    String   @default("received")
 
-  // Inputs
-  material         String   @default("6061")
-  manufacturing    String   @default("CNC")
-  batchVolume      String?  // e.g. "proto", "small", "medium", "large"
-  surfaceTreatment String?  // "none" | "anodize" | "chem_film" | "paint"
-  inserts          Boolean  @default(false)
-  insertCount      Int?     // only if inserts = true
+  email String
+  phone String?
 
-  // Files
-  stepOriginal     String?
-  stepStored       String?
-  drawingOriginal  String?
-  drawingStored    String?
+  stepOriginal    String
+  stepStored      String
+  drawingOriginal String?
+  drawingStored   String?
+
+  dfmResultJson    String?
+  drawingParseJson String?
 }
 
 

@@ -1,491 +1,821 @@
 "use client";
 
-import { useState } from "react";
-import WaitlistModal from "@/components/WaitlistModal";
+import { useState, useRef, useCallback } from "react";
+
+type UploadState = "idle" | "submitting" | "done" | "error";
+
+function formatBytes(bytes: number) {
+  if (!Number.isFinite(bytes)) return "";
+  const units = ["B", "KB", "MB", "GB"];
+  let n = bytes;
+  let i = 0;
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+  return `${n.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+}
 
 export default function HomePage() {
-  const [modalOpen, setModalOpen] = useState(false);
-  const [modalRole, setModalRole] = useState<"designer" | "shop">("designer");
+  const [stepFile, setStepFile] = useState<File | null>(null);
+  const [drawingFile, setDrawingFile] = useState<File | null>(null);
+  const [email, setEmail] = useState("");
+  const [phone, setPhone] = useState("");
+  const [uploadState, setUploadState] = useState<UploadState>("idle");
+  const [errorMsg, setErrorMsg] = useState("");
+  const [jobId, setJobId] = useState("");
+  const [stepDrag, setStepDrag] = useState(false);
+  const [drawingDrag, setDrawingDrag] = useState(false);
 
-  const openModal = (role: "designer" | "shop" = "designer") => {
-    setModalRole(role);
-    setModalOpen(true);
-  };
+  const stepInputRef = useRef<HTMLInputElement>(null);
+  const drawingInputRef = useRef<HTMLInputElement>(null);
+  const uploadRef = useRef<HTMLDivElement>(null);
+
+  const scrollToUpload = () =>
+    uploadRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+
+  const onDrop = useCallback(
+    (setter: (f: File) => void, extensions: string[]) =>
+      (e: React.DragEvent) => {
+        e.preventDefault();
+        setStepDrag(false);
+        setDrawingDrag(false);
+        const file = e.dataTransfer.files?.[0];
+        if (!file) return;
+        const ext = file.name.toLowerCase().split(".").pop() || "";
+        if (extensions.includes(ext)) setter(file);
+      },
+    []
+  );
+
+  const prevent = (e: React.DragEvent) => e.preventDefault();
+
+  async function handleSubmit() {
+    setErrorMsg("");
+    if (!stepFile) { setErrorMsg("STEP file is required."); return; }
+    const ext = stepFile.name.toLowerCase().split(".").pop() || "";
+    if (!["step", "stp"].includes(ext)) { setErrorMsg("File must be .step or .stp"); return; }
+    if (!email.trim() || !email.includes("@")) { setErrorMsg("Valid email is required."); return; }
+    if (drawingFile) {
+      const dExt = drawingFile.name.toLowerCase().split(".").pop() || "";
+      if (dExt !== "pdf") { setErrorMsg("Drawing must be a PDF."); return; }
+    }
+
+    setUploadState("submitting");
+    try {
+      const fd = new FormData();
+      fd.append("step", stepFile);
+      if (drawingFile) fd.append("drawing", drawingFile);
+      fd.append("email", email.trim().toLowerCase());
+      if (phone.trim()) fd.append("phone", phone.trim());
+
+      const res = await fetch("/api/upload", { method: "POST", body: fd });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || `Upload failed (${res.status})`);
+      if (!data?.jobId) throw new Error("No job ID returned.");
+      setJobId(data.jobId);
+      setUploadState("done");
+    } catch (err: unknown) {
+      setErrorMsg(err instanceof Error ? err.message : "Upload failed.");
+      setUploadState("error");
+    }
+  }
+
+  function reset() {
+    setStepFile(null); setDrawingFile(null); setEmail(""); setPhone("");
+    setUploadState("idle"); setErrorMsg(""); setJobId("");
+  }
 
   return (
     <>
-      <WaitlistModal isOpen={modalOpen} onClose={() => setModalOpen(false)} defaultRole={modalRole} />
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;1,300;1,400&family=DM+Mono:wght@300;400;500&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
         :root {
-          --black: #080808;
-          --panel: #141414;
-          --panel-hover: #1b1b1b;
-          --border: #232323;
-          --gold: #C4913A;
-          --gold-dim: #7A5820;
-          --gold-pale: rgba(196,145,58,0.1);
-          --white: #F5F0EB;
-          --muted: #686868;
-          --font-display: 'Cormorant Garamond', serif;
-          --font-mono: 'DM Mono', monospace;
+          --bg: #ffffff;
+          --bg-secondary: #f8f8f8;
+          --text: #111111;
+          --text-secondary: #555555;
+          --text-tertiary: #999999;
+          --border: #e4e4e4;
+          --border-hover: #c0c0c0;
+          --accent: #2563eb;
+          --accent-hover: #1d4ed8;
+          --accent-light: #eff4ff;
+          --accent-border: #bfdbfe;
+          --error: #dc2626;
+          --error-bg: #fef2f2;
+          --error-border: #fecaca;
+          --success: #16a34a;
+          --success-bg: #f0fdf4;
+          --success-border: #bbf7d0;
+          --radius: 10px;
+          --radius-sm: 6px;
+          --font: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+          --font-mono: 'JetBrains Mono', monospace;
         }
 
         html { scroll-behavior: smooth; }
 
         body {
-          background: var(--black);
-          color: var(--white);
-          font-family: var(--font-mono);
-          font-size: 13px;
-          font-weight: 300;
-          letter-spacing: 0.02em;
+          background: var(--bg);
+          color: var(--text);
+          font-family: var(--font);
+          font-size: 14px;
+          font-weight: 400;
           line-height: 1.6;
           -webkit-font-smoothing: antialiased;
-          overflow-x: hidden;
-        }
-
-        body::before {
-          content: '';
-          position: fixed;
-          inset: 0;
-          background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.04'/%3E%3C/svg%3E");
-          pointer-events: none;
-          z-index: 1000;
-          opacity: 0.35;
         }
 
         /* ── NAV ── */
         nav {
-          position: fixed;
-          top: 0; left: 0; right: 0;
-          z-index: 100;
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          padding: 24px 52px;
-          transition: background 0.4s, border-color 0.4s;
+          position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+          display: flex; align-items: center; justify-content: space-between;
+          padding: 16px 32px;
+          background: rgba(255,255,255,0.85);
+          backdrop-filter: blur(12px);
+          border-bottom: 1px solid transparent;
+          transition: border-color 0.3s;
+        }
+        nav.scrolled { border-bottom-color: var(--border); }
+
+        .nav-logo {
+          font-family: var(--font);
+          font-size: 22px;
+          font-weight: 700;
+          color: var(--text);
+          letter-spacing: -0.03em;
         }
 
-        nav.scrolled {
-          background: rgba(8,8,8,0.95);
-          border-bottom: 1px solid var(--border);
-          backdrop-filter: blur(16px);
-        }
-
-        .nav-wordmark {
-          font-family: var(--font-mono);
-          font-size: 14px;
+        .nav-btn {
+          font-family: var(--font);
+          font-size: 13px;
           font-weight: 500;
-          letter-spacing: 0.2em;
-          text-transform: uppercase;
-          color: var(--gold);
-          text-decoration: none;
-          flex-shrink: 0;
+          color: var(--bg);
+          background: var(--text);
+          border: none;
+          padding: 8px 18px;
+          border-radius: var(--radius-sm);
+          cursor: pointer;
+          transition: opacity 0.15s;
         }
-
-        .nav-right {
-          display: flex;
-          align-items: center;
-          gap: 32px;
-        }
-
-        /* Nav links always visible on desktop */
-        .nav-links {
-          display: flex;
-          gap: 28px;
-          list-style: none;
-          align-items: center;
-        }
-
-        .nav-links a {
-          color: var(--muted);
-          text-decoration: none;
-          font-size: 11px;
-          letter-spacing: 0.14em;
-          text-transform: uppercase;
-          transition: color 0.2s;
-          white-space: nowrap;
-        }
-        .nav-links a:hover { color: var(--white); }
-
-        .nav-divider {
-          width: 1px;
-          height: 16px;
-          background: var(--border);
-        }
-
-        .nav-cta {
-          display: inline-flex;
-          align-items: center;
-          font-family: var(--font-mono);
-          font-size: 11px;
-          font-weight: 500;
-          letter-spacing: 0.14em;
-          text-transform: uppercase;
-          color: var(--black);
-          background: var(--gold);
-          padding: 9px 20px;
-          text-decoration: none;
-          transition: background 0.2s;
-          white-space: nowrap;
-        }
-        .nav-cta:hover { background: #D4A050; }
-
-        @keyframes pulse {
-          0%, 100% { opacity: 1; }
-          50% { opacity: 0.3; }
-        }
+        .nav-btn:hover { opacity: 0.8; }
 
         /* ── HERO ── */
         .hero {
-          padding: 88px 52px 80px;
-          position: relative;
-          overflow: hidden;
-          border-bottom: 1px solid var(--border);
+          padding: 80px 32px 0;
+          text-align: center;
+          max-width: 720px;
+          margin: 0 auto;
         }
-
-        .hero-bg-text {
-          position: absolute;
-          bottom: -0.08em;
-          right: -0.03em;
-          font-family: var(--font-display);
-          font-size: clamp(220px, 28vw, 440px);
-          font-weight: 300;
-          color: transparent;
-          -webkit-text-stroke: 1px rgba(196,145,58,0.055);
-          line-height: 1;
-          user-select: none;
-          pointer-events: none;
-          letter-spacing: -0.02em;
-        }
-
-        .hero-inner {
-          position: relative;
-          z-index: 2;
-          max-width: 860px;
-          animation: fadeUp 0.8s ease both;
-        }
-
-        .hero-meta-row {
-          display: flex;
-          align-items: center;
-          margin-bottom: 28px;
-        }
-
-        .hero-meta-badge {
-          display: inline-flex;
-          align-items: center;
-          gap: 7px;
-          font-size: 10px;
-          letter-spacing: 0.18em;
-          text-transform: uppercase;
-          color: var(--gold);
-          background: var(--gold-pale);
-          border: 1px solid rgba(196,145,58,0.28);
-          padding: 6px 14px;
-        }
-
-        .hero-meta-badge::before {
-          content: '';
-          width: 5px; height: 5px;
-          border-radius: 50%;
-          background: var(--gold);
-          animation: pulse 2s ease infinite;
-          flex-shrink: 0;
-        }
-
-        .hero-meta-sep {
-          height: 30px;
-          width: 1px;
-          background: var(--border);
-          margin: 0 16px;
-        }
-
-        .hero-meta-region {
-          font-size: 10px;
-          letter-spacing: 0.16em;
-          text-transform: uppercase;
-          color: var(--muted);
-        }
-        .hero-meta-region strong { color: var(--white); font-weight: 400; }
 
         .hero-h1 {
-          font-family: var(--font-display);
-          font-size: clamp(58px, 7vw, 108px);
-          font-weight: 300;
-          line-height: 1.0;
-          letter-spacing: -0.01em;
-          color: var(--white);
-          margin-bottom: 36px;
-        }
-        .hero-h1 em { font-style: italic; color: var(--gold); }
-
-        .hero-h1 .line-sub {
-          display: block;
-          font-size: clamp(26px, 3vw, 44px);
-          color: var(--muted);
-          font-weight: 300;
-          font-style: normal;
-          margin-top: 10px;
-          letter-spacing: 0;
+          font-size: clamp(22px, 2.8vw, 28px);
+          font-weight: 600;
+          line-height: 1.35;
+          letter-spacing: -0.02em;
+          color: var(--text);
+          margin-bottom: 10px;
         }
 
         .hero-sub {
           font-size: 14px;
-          font-weight: 300;
-          color: var(--muted);
-          line-height: 1.9;
-          max-width: 580px;
-        }
-        .hero-sub strong { color: var(--white); font-weight: 400; }
-
-        /* ── CARDS ── */
-        .cards-section {
-          display: grid;
-          grid-template-columns: 1fr 1fr;
-          gap: 1px;
-          background: var(--border);
+          font-weight: 400;
+          color: var(--text-secondary);
+          line-height: 1.5;
+          max-width: 540px;
+          margin: 0 auto 40px;
         }
 
-        .side-card {
-          background: var(--black);
-          padding: 72px 60px;
-          position: relative;
-          text-decoration: none;
-          display: block;
-          transition: background 0.25s;
+        .hero-proof {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 6px;
+          font-family: var(--font-mono);
+          font-size: 11px;
+          color: var(--text-tertiary);
+          margin-bottom: 6px;
+          white-space: nowrap;
         }
-        .side-card:hover { background: #0e0e0e; }
-
-        .side-card::after {
-          content: attr(data-num);
-          position: absolute;
-          top: 52px; right: 52px;
-          font-family: var(--font-display);
-          font-size: 88px;
-          font-weight: 300;
-          color: transparent;
-          -webkit-text-stroke: 1px rgba(255,255,255,0.028);
-          line-height: 1;
+        .hero-proof-sep {
+          color: var(--border-hover);
           user-select: none;
         }
 
-        .card-eyebrow {
-          font-size: 10px;
-          letter-spacing: 0.22em;
-          text-transform: uppercase;
-          color: var(--gold);
-          margin-bottom: 20px;
+        /* ── UPLOAD CARD ── */
+        .upload-wrapper {
+          max-width: 640px;
+          margin: 16px auto 0;
         }
 
-        .card-h2 {
-          font-family: var(--font-display);
-          font-size: clamp(28px, 2.6vw, 42px);
-          font-weight: 300;
-          color: var(--white);
-          line-height: 1.1;
-          margin-bottom: 18px;
-          letter-spacing: -0.01em;
+        .upload-card {
+          background: var(--bg);
+          border: 1px solid var(--border);
+          border-radius: var(--radius);
+          padding: 20px 24px;
         }
 
-        .card-body {
+        .dropzone-row {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 10px;
+          margin-bottom: 10px;
+        }
+
+        .dropzone {
+          border: 1.5px dashed var(--border);
+          border-radius: var(--radius-sm);
+          padding: 20px 12px;
+          text-align: center;
+          cursor: pointer;
+          transition: border-color 0.15s, background 0.15s;
+        }
+        .dropzone:hover { border-color: var(--border-hover); background: var(--bg-secondary); }
+        .dropzone.active { border-color: var(--accent); background: var(--accent-light); }
+        .dropzone.has-file { border-color: var(--accent); border-style: solid; background: var(--accent-light); }
+
+        .dropzone-main {
+          font-size: 14px;
+          font-weight: 500;
+          color: var(--text);
+          margin-bottom: 3px;
+        }
+        .dropzone-hint {
           font-size: 12px;
-          color: var(--muted);
-          line-height: 1.9;
-          margin-bottom: 32px;
-          max-width: 360px;
+          color: var(--text-tertiary);
+        }
+        .dropzone-filename {
+          font-family: var(--font-mono);
+          font-size: 13px;
+          font-weight: 500;
+          color: var(--accent);
+        }
+        .dropzone-size {
+          font-size: 11px;
+          color: var(--text-tertiary);
+          margin-top: 2px;
+        }
+        .dropzone-remove {
+          font-size: 11px;
+          color: var(--text-tertiary);
+          background: none; border: none;
+          cursor: pointer; font-family: var(--font);
+          text-decoration: underline;
+          margin-top: 6px;
+          transition: color 0.15s;
+        }
+        .dropzone-remove:hover { color: var(--text); }
+
+        .field-row {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 10px;
+          margin-bottom: 10px;
         }
 
-        .card-points {
+        .input-field {
+          width: 100%;
+          padding: 10px 12px;
+          background: var(--bg);
+          border: 1px solid var(--border);
+          border-radius: var(--radius-sm);
+          color: var(--text);
+          font-family: var(--font);
+          font-size: 13px;
+          outline: none;
+          transition: border-color 0.15s;
+        }
+        .input-field::placeholder { color: var(--text-tertiary); }
+        .input-field:focus { border-color: var(--accent); }
+
+        .submit-btn {
+          width: 100%;
+          padding: 12px;
+          background: var(--accent);
+          color: white;
+          border: none;
+          border-radius: var(--radius-sm);
+          font-family: var(--font);
+          font-size: 14px;
+          font-weight: 500;
+          cursor: pointer;
+          transition: background 0.15s;
+        }
+        .submit-btn:hover { background: var(--accent-hover); }
+        .submit-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        .upload-footer {
+          text-align: center;
+          margin-top: 14px;
+          font-size: 12px;
+          color: var(--text-tertiary);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 6px;
+        }
+        .upload-footer svg { flex-shrink: 0; }
+
+        .error-msg {
+          font-size: 13px;
+          color: var(--error);
+          background: var(--error-bg);
+          border: 1px solid var(--error-border);
+          border-radius: var(--radius-sm);
+          padding: 10px 14px;
+          margin-bottom: 10px;
+        }
+
+        /* ── SUCCESS STATE ── */
+        .success-card {
+          text-align: center;
+          padding: 32px 20px;
+        }
+        .success-check {
+          width: 44px; height: 44px;
+          border-radius: 50%;
+          background: var(--success-bg);
+          border: 1px solid var(--success-border);
+          display: flex; align-items: center; justify-content: center;
+          margin: 0 auto 16px;
+          color: var(--success);
+          font-size: 20px;
+        }
+        .success-title {
+          font-size: 18px;
+          font-weight: 600;
+          color: var(--text);
+          margin-bottom: 8px;
+        }
+        .success-sub {
+          font-size: 13px;
+          color: var(--text-secondary);
+          line-height: 1.6;
+          margin-bottom: 6px;
+        }
+        .success-email {
+          font-weight: 500;
+          color: var(--text);
+        }
+        .success-id {
+          font-family: var(--font-mono);
+          font-size: 11px;
+          color: var(--text-tertiary);
+          margin-top: 12px;
+        }
+        .reset-btn {
+          margin-top: 20px;
+          padding: 8px 18px;
+          background: var(--bg);
+          border: 1px solid var(--border);
+          border-radius: var(--radius-sm);
+          font-family: var(--font);
+          font-size: 13px;
+          color: var(--text-secondary);
+          cursor: pointer;
+          transition: border-color 0.15s, color 0.15s;
+        }
+        .reset-btn:hover { border-color: var(--border-hover); color: var(--text); }
+
+        /* ── FEATURES ── */
+        .features {
+          padding: 80px 32px;
+          max-width: 880px;
+          margin: 0 auto;
+        }
+        .features-header {
+          text-align: center;
+          margin-bottom: 48px;
+        }
+        .features-eyebrow {
+          font-size: 12px;
+          font-weight: 500;
+          text-transform: uppercase;
+          letter-spacing: 0.08em;
+          color: var(--accent);
+          margin-bottom: 10px;
+        }
+        .features-h2 {
+          font-size: clamp(22px, 3vw, 30px);
+          font-weight: 600;
+          color: var(--text);
+          letter-spacing: -0.02em;
+        }
+
+        .features-grid {
+          display: grid;
+          grid-template-columns: repeat(3, 1fr);
+          gap: 1px;
+          background: var(--border);
+          border: 1px solid var(--border);
+          border-radius: var(--radius);
+          overflow: hidden;
+        }
+        .feature-cell {
+          background: var(--bg);
+          padding: 28px 24px;
+        }
+        .feature-tag {
+          font-family: var(--font-mono);
+          font-size: 11px;
+          font-weight: 500;
+          color: var(--accent);
+          margin-bottom: 10px;
+        }
+        .feature-title {
+          font-size: 15px;
+          font-weight: 600;
+          color: var(--text);
+          margin-bottom: 6px;
+          line-height: 1.3;
+        }
+        .feature-desc {
+          font-size: 13px;
+          color: var(--text-secondary);
+          line-height: 1.55;
+        }
+
+        /* ── HOW IT WORKS ── */
+        .how {
+          padding: 80px 32px;
+          max-width: 880px;
+          margin: 0 auto;
+          border-top: 1px solid var(--border);
+        }
+        .how-header {
+          text-align: center;
+          margin-bottom: 48px;
+        }
+        .how-grid {
+          display: grid;
+          grid-template-columns: repeat(3, 1fr);
+          gap: 40px;
+        }
+        .how-num {
+          font-family: var(--font-mono);
+          font-size: 12px;
+          font-weight: 500;
+          color: var(--text-tertiary);
+          margin-bottom: 12px;
+        }
+        .how-title {
+          font-size: 15px;
+          font-weight: 600;
+          color: var(--text);
+          margin-bottom: 6px;
+        }
+        .how-desc {
+          font-size: 13px;
+          color: var(--text-secondary);
+          line-height: 1.55;
+        }
+
+        /* ── TRUST ── */
+        .trust {
+          padding: 64px 32px 80px;
+          max-width: 600px;
+          margin: 0 auto;
+          text-align: center;
+          border-top: 1px solid var(--border);
+        }
+        .trust-h2 {
+          font-size: 22px;
+          font-weight: 600;
+          color: var(--text);
+          margin-bottom: 20px;
+          letter-spacing: -0.02em;
+        }
+        .trust-points {
           display: flex;
           flex-direction: column;
           gap: 12px;
-          margin-bottom: 44px;
+          text-align: left;
+          max-width: 400px;
+          margin: 0 auto 32px;
         }
-
-        .card-point {
+        .trust-point {
           display: flex;
           align-items: flex-start;
-          gap: 13px;
-          font-size: 12px;
-          color: var(--white);
-          line-height: 1.55;
+          gap: 10px;
+          font-size: 14px;
+          color: var(--text-secondary);
+          line-height: 1.5;
         }
-        .card-point::before { content: '—'; color: var(--gold); flex-shrink: 0; }
-
-        .card-link {
+        .trust-icon {
+          flex-shrink: 0;
+          margin-top: 3px;
+          color: var(--success);
+        }
+        .trust-cta {
           display: inline-flex;
-          align-items: center;
-          gap: 9px;
-          font-size: 11px;
-          letter-spacing: 0.16em;
-          text-transform: uppercase;
-          color: var(--gold);
-          text-decoration: none;
-          transition: gap 0.2s;
+          font-family: var(--font);
+          font-size: 14px;
+          font-weight: 500;
+          color: var(--bg);
+          background: var(--text);
+          padding: 10px 24px;
+          border: none;
+          border-radius: var(--radius-sm);
+          cursor: pointer;
+          transition: opacity 0.15s;
         }
-        .side-card:hover .card-link { gap: 14px; }
+        .trust-cta:hover { opacity: 0.8; }
 
         /* ── FOOTER ── */
         footer {
-          padding: 32px 52px;
+          padding: 24px 32px;
           border-top: 1px solid var(--border);
           display: flex;
           align-items: center;
           justify-content: space-between;
         }
-
-        .footer-wordmark {
-          font-family: var(--font-mono);
+        .footer-logo {
+          font-size: 15px;
+          font-weight: 700;
+          color: var(--text);
+          letter-spacing: -0.03em;
+        }
+        .footer-meta {
           font-size: 12px;
-          font-weight: 500;
-          letter-spacing: 0.18em;
-          text-transform: uppercase;
-          color: var(--gold);
-        }
-
-        .footer-links { display: flex; gap: 28px; list-style: none; }
-        .footer-links a {
-          font-size: 11px;
-          color: var(--muted);
-          text-decoration: none;
-          letter-spacing: 0.1em;
-          text-transform: uppercase;
-          transition: color 0.2s;
-        }
-        .footer-links a:hover { color: var(--white); }
-
-        .footer-meta { font-size: 11px; color: var(--muted); }
-
-        /* ── ANIMATIONS ── */
-        @keyframes fadeUp {
-          from { opacity: 0; transform: translateY(18px); }
-          to   { opacity: 1; transform: translateY(0); }
+          color: var(--text-tertiary);
         }
 
         /* ── RESPONSIVE ── */
-        @media (max-width: 1080px) {
-          .cards-section { grid-template-columns: 1fr; }
-        }
-
-        @media (max-width: 768px) {
-          nav { padding: 20px 24px; }
-          .nav-links { display: none; }
-          .nav-divider { display: none; }
-          .hero { padding: 88px 24px 64px; }
-          .side-card { padding: 52px 28px; }
-          footer { padding: 28px 24px; flex-direction: column; gap: 20px; align-items: flex-start; }
+        @media (max-width: 700px) {
+          .hero { padding: 76px 20px 0; }
+          .upload-wrapper { margin-top: 16px; }
+          .upload-card { padding: 16px; }
+          .features-grid { grid-template-columns: 1fr; }
+          .how-grid { grid-template-columns: 1fr; gap: 28px; }
+          .features, .how, .trust { padding-left: 20px; padding-right: 20px; }
+          nav { padding: 14px 20px; }
+          footer { padding: 20px; flex-direction: column; gap: 8px; }
+          .field-row { grid-template-columns: 1fr; }
+          .dropzone-row { grid-template-columns: 1fr; }
+          .hero-proof { white-space: normal; flex-wrap: wrap; font-size: 10px; }
         }
       `}</style>
 
       {/* ── NAV ── */}
       <nav id="main-nav">
-        <a href="/" className="nav-wordmark">Facet</a>
-        <div className="nav-right">
-          <ul className="nav-links">
-            <li><a href="/buyers">Designers</a></li>
-            <li><a href="/suppliers">Suppliers</a></li>
-          </ul>
-          <div className="nav-divider" />
-          <button onClick={() => openModal("designer")} className="nav-cta">Join</button>
-        </div>
+        <span className="nav-logo">Facet</span>
+        <button onClick={scrollToUpload} className="nav-btn">Analyze a part</button>
       </nav>
 
       <main>
         {/* ── HERO ── */}
-        <section className="hero" aria-label="Facet — CNC manufacturing marketplace">
-          <div className="hero-bg-text" aria-hidden="true">FCT</div>
+        <section className="hero">
+          <h1 className="hero-h1">
+            Upload a STEP file.<br />
+            Extract design intent, technical requirements, and DFM cost drivers — in seconds.
+          </h1>
+          <p className="hero-sub">
+            Stop spending hours reviewing models and drawings before you can quote.
+            Facet pulls the key requirements and flags major cost drivers — so you
+            spend time making parts, not translating documents.
+          </p>
+        </section>
 
-          <div className="hero-inner">
-            <div className="hero-meta-row">
-              <span className="hero-meta-region">
-                <strong>Northeast Launch</strong>&nbsp;— expanding across regions
-              </span>
+        {/* ── UPLOAD ── */}
+        <div className="upload-wrapper" ref={uploadRef}>
+          <div className="hero-proof">
+            <span>Setups</span>
+            <span className="hero-proof-sep">·</span>
+            <span>Holes + L/D</span>
+            <span className="hero-proof-sep">·</span>
+            <span>Thin walls</span>
+            <span className="hero-proof-sep">·</span>
+            <span>Tooling</span>
+            <span className="hero-proof-sep">·</span>
+            <span>DFM flags</span>
+            <span className="hero-proof-sep">·</span>
+            <span>Material removal</span>
+          </div>
+          <div className="upload-card">
+            {uploadState === "done" ? (
+              <div className="success-card">
+                <div className="success-check">✓</div>
+                <div className="success-title">Part submitted</div>
+                <div className="success-sub">
+                  Your STEP file is being analyzed. We&apos;ll follow up at{" "}
+                  <span className="success-email">{email}</span>.
+                </div>
+                <div className="success-id">{jobId}</div>
+                <button onClick={reset} className="reset-btn">Upload another</button>
+              </div>
+            ) : (
+              <>
+                {errorMsg && <div className="error-msg">{errorMsg}</div>}
+
+                <div className="dropzone-row">
+                  {/* STEP */}
+                  <div
+                    className={`dropzone ${stepDrag ? "active" : ""} ${stepFile ? "has-file" : ""}`}
+                    onClick={() => stepInputRef.current?.click()}
+                    onDragOver={(e) => { prevent(e); setStepDrag(true); }}
+                    onDragLeave={() => setStepDrag(false)}
+                    onDrop={onDrop((f) => setStepFile(f), ["step", "stp"])}
+                  >
+                    <input ref={stepInputRef} type="file" accept=".step,.stp" style={{ display: "none" }}
+                      onChange={(e) => setStepFile(e.target.files?.[0] || null)} />
+                    {stepFile ? (
+                      <>
+                        <div className="dropzone-filename">{stepFile.name}</div>
+                        <div className="dropzone-size">{formatBytes(stepFile.size)}</div>
+                        <button className="dropzone-remove"
+                          onClick={(e) => { e.stopPropagation(); setStepFile(null); }}>Remove</button>
+                      </>
+                    ) : (
+                      <>
+                        <div className="dropzone-main">STEP file</div>
+                        <div className="dropzone-hint">.step or .stp — required</div>
+                      </>
+                    )}
+                  </div>
+
+                  {/* Drawing */}
+                  <div
+                    className={`dropzone ${drawingDrag ? "active" : ""} ${drawingFile ? "has-file" : ""}`}
+                    onClick={() => drawingInputRef.current?.click()}
+                    onDragOver={(e) => { prevent(e); setDrawingDrag(true); }}
+                    onDragLeave={() => setDrawingDrag(false)}
+                    onDrop={onDrop((f) => setDrawingFile(f), ["pdf"])}
+                  >
+                    <input ref={drawingInputRef} type="file" accept=".pdf" style={{ display: "none" }}
+                      onChange={(e) => setDrawingFile(e.target.files?.[0] || null)} />
+                    {drawingFile ? (
+                      <>
+                        <div className="dropzone-filename">{drawingFile.name}</div>
+                        <div className="dropzone-size">{formatBytes(drawingFile.size)}</div>
+                        <button className="dropzone-remove"
+                          onClick={(e) => { e.stopPropagation(); setDrawingFile(null); }}>Remove</button>
+                      </>
+                    ) : (
+                      <>
+                        <div className="dropzone-main">Engineering drawing</div>
+                        <div className="dropzone-hint">PDF — optional</div>
+                      </>
+                    )}
+                  </div>
+                </div>
+
+                {/* Fields */}
+                <div className="field-row">
+                  <input type="email" className="input-field" placeholder="Email"
+                    value={email} onChange={(e) => setEmail(e.target.value)} />
+                  <input type="tel" className="input-field" placeholder="Phone (optional)"
+                    value={phone} onChange={(e) => setPhone(e.target.value)} />
+                </div>
+
+                <button className="submit-btn" onClick={handleSubmit}
+                  disabled={uploadState === "submitting"}>
+                  {uploadState === "submitting" ? "Analyzing..." : "Analyze part"}
+                </button>
+              </>
+            )}
+          </div>
+          <div className="upload-footer">
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+              <path d="M8 1a4.5 4.5 0 00-4.5 4.5V7H3a1 1 0 00-1 1v6a1 1 0 001 1h10a1 1 0 001-1V8a1 1 0 00-1-1h-.5V5.5A4.5 4.5 0 008 1zm-2.5 4.5a2.5 2.5 0 015 0V7h-5V5.5z" fill="currentColor"/>
+            </svg>
+            Files stored under a unique ID. Never shared without your permission.
+          </div>
+        </div>
+
+        {/* ── FEATURES ── */}
+        <section className="features">
+          <div className="features-header">
+            <div className="features-eyebrow">What you get</div>
+            <h2 className="features-h2">Everything to evaluate a part before you quote</h2>
+          </div>
+
+          <div className="features-grid">
+            <div className="feature-cell">
+              <div className="feature-tag">SETUPS</div>
+              <div className="feature-title">3-axis vs 5-axis</div>
+              <div className="feature-desc">
+                Number of fixturings, approach axis per setup, and machine classification.
+              </div>
             </div>
-
-            <h1 className="hero-h1">
-              Machined parts.<br />
-              <em>Real designers.</em><br />
-              <em>Real suppliers.</em>
-              <span className="line-sub">Quotes you can trust. Jobs worth taking.</span>
-            </h1>
-
-            <p className="hero-sub">
-              Designers upload a STEP file and get{" "}
-              <strong>multiple competitive quotes with pricing you can actually understand</strong>{" "}
-              — no cold emails, no black-box numbers, IP protected end to end.
-              Shops receive{" "}
-              <strong>pre-qualified jobs matched to their equipment</strong>{" "}
-              — no wasted time on misaligned budgets or parts they can't make.
-            </p>
+            <div className="feature-cell">
+              <div className="feature-tag">HOLES</div>
+              <div className="feature-title">Full hole inventory</div>
+              <div className="feature-desc">
+                Through, blind, counterbore, countersink — with diameter, depth, and L/D ratios flagged.
+              </div>
+            </div>
+            <div className="feature-cell">
+              <div className="feature-tag">THIN WALLS</div>
+              <div className="feature-title">Thickness + severity</div>
+              <div className="feature-desc">
+                Geometry-based and hole proximity detection. Critical, warning, advisory ratings.
+              </div>
+            </div>
+            <div className="feature-cell">
+              <div className="feature-tag">VOLUME</div>
+              <div className="feature-title">Material removal %</div>
+              <div className="feature-desc">
+                Bounding box vs solid volume — see how much stock you&apos;re cutting before you quote.
+              </div>
+            </div>
+            <div className="feature-cell">
+              <div className="feature-tag">TOOLING</div>
+              <div className="feature-title">Min tool dia + changes</div>
+              <div className="feature-desc">
+                Per-fixturing cutter constraints and estimated tool swaps from hole sizes and fillets.
+              </div>
+            </div>
+            <div className="feature-cell">
+              <div className="feature-tag">DFM FLAGS</div>
+              <div className="feature-title">Issues — ranked</div>
+              <div className="feature-desc">
+                Deep pockets, small radii, tight access, special tooling — flagged with severity and detail.
+              </div>
+            </div>
           </div>
         </section>
 
-        {/* ── CARDS ── */}
-        <section className="cards-section" aria-label="Platform value for designers and suppliers">
-          <div className="side-card" data-num="01" style={{cursor:"pointer"}} onClick={() => openModal("designer")} role="button" aria-label="Facet for designers">
-            <div className="card-eyebrow">Designers &amp; Engineers</div>
-            <h2 className="card-h2">
-              Know what you're<br />paying for.
-            </h2>
-            <p className="card-body">
-              Stop guessing why one shop quotes $800 and another quotes $3,200.
-              Upload your part, get competing quotes from verified Northeast CNC suppliers,
-              and actually understand the pricing.
-            </p>
-            <div className="card-points">
-              <div className="card-point">Upload STEP or DWG — stored securely under a UUID, never shared without your approval</div>
-              <div className="card-point">Get multiple competing quotes so you can compare on price and capability</div>
-              <div className="card-point">Facet routes to shops that fit your part — you see quotes with pricing explained</div>
-              <div className="card-point">Starting with CNC aluminum 6061 (brackets) — more materials coming</div>
-            </div>
-            <span className="card-link">Learn more for designers →</span>
+        {/* ── HOW IT WORKS ── */}
+        <section className="how">
+          <div className="how-header">
+            <div className="features-eyebrow">How it works</div>
+            <h2 className="features-h2">Three steps</h2>
           </div>
+          <div className="how-grid">
+            <div>
+              <div className="how-num">01</div>
+              <div className="how-title">Upload your STEP file</div>
+              <div className="how-desc">
+                Drop in the file. Optionally add an engineering drawing for tolerance context.
+              </div>
+            </div>
+            <div>
+              <div className="how-num">02</div>
+              <div className="how-title">We analyze the geometry</div>
+              <div className="how-desc">
+                Features, setups, tooling, and manufacturability issues — extracted automatically.
+              </div>
+            </div>
+            <div>
+              <div className="how-num">03</div>
+              <div className="how-title">You get the breakdown</div>
+              <div className="how-desc">
+                Everything you need to decide if a job is worth taking and what to charge.
+              </div>
+            </div>
+          </div>
+        </section>
 
-          <div className="side-card" data-num="02" style={{cursor:"pointer"}} onClick={() => openModal("shop")} role="button" aria-label="Facet for machine shops">
-            <div className="card-eyebrow">CNC Machine Shops</div>
-            <h2 className="card-h2">
-              Only jobs<br />worth taking.
-            </h2>
-            <p className="card-body">
-              Stop wasting time on back-and-forth that leads nowhere — wrong budgets,
-              bad fits, buyers who don't understand what machining costs.
-              Facet sends you pre-qualified jobs matched to your shop.
-            </p>
-            <div className="card-points">
-              <div className="card-point">Jobs pre-matched to your equipment, materials, and capacity — no cold leads</div>
-              <div className="card-point">Buyers who understand cost drivers — far less time on misaligned quotes</div>
-              <div className="card-point">You decide what to accept — no exclusivity, no pressure</div>
-              <div className="card-point">Early partners directly shape how the platform develops</div>
+        {/* ── TRUST ── */}
+        <section className="trust">
+          <h2 className="trust-h2">Your files. Your control.</h2>
+          <div className="trust-points">
+            <div className="trust-point">
+              <span className="trust-icon">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                  <path d="M6 8l2 2 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                  <circle cx="8" cy="8" r="6.5" stroke="currentColor" strokeWidth="1.5"/>
+                </svg>
+              </span>
+              Stored under a unique identifier — no public exposure
             </div>
-            <span className="card-link">Learn more for suppliers →</span>
+            <div className="trust-point">
+              <span className="trust-icon">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                  <path d="M6 8l2 2 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                  <circle cx="8" cy="8" r="6.5" stroke="currentColor" strokeWidth="1.5"/>
+                </svg>
+              </span>
+              Never shared without your explicit permission
+            </div>
+            <div className="trust-point">
+              <span className="trust-icon">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                  <path d="M6 8l2 2 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                  <circle cx="8" cy="8" r="6.5" stroke="currentColor" strokeWidth="1.5"/>
+                </svg>
+              </span>
+              No account required — upload, get your analysis, done
+            </div>
           </div>
+          <button onClick={scrollToUpload} className="trust-cta">
+            Upload a part
+          </button>
         </section>
       </main>
 
       {/* ── FOOTER ── */}
       <footer>
-        <div className="footer-wordmark">Facet</div>
-        <ul className="footer-links">
-          <li><a href="/buyers">Designers</a></li>
-          <li><a href="/suppliers">Suppliers</a></li>
-          <li><button onClick={() => openModal("designer")} style={{background:"none",border:"none",cursor:"pointer",fontFamily:"inherit",fontSize:"11px",color:"var(--muted)",letterSpacing:"0.1em",textTransform:"uppercase",transition:"color 0.2s",padding:0}} onMouseOver={e=>(e.currentTarget.style.color="var(--white)")} onMouseOut={e=>(e.currentTarget.style.color="var(--muted)")}>Join</button></li>
-        </ul>
-        <div className="footer-meta">© 2026 Facet. All rights reserved.</div>
+        <span className="footer-logo">Facet</span>
+        <span className="footer-meta">© 2026 Facet</span>
       </footer>
 
-      <script dangerouslySetInnerHTML={{
-        __html: `
-          const nav = document.getElementById('main-nav');
-          window.addEventListener('scroll', () => {
-            nav.classList.toggle('scrolled', window.scrollY > 40);
-          }, { passive: true });
-        `
-      }} />
+      <script dangerouslySetInnerHTML={{ __html: `
+        const nav = document.getElementById('main-nav');
+        window.addEventListener('scroll', () => {
+          nav.classList.toggle('scrolled', window.scrollY > 40);
+        }, { passive: true });
+      ` }} />
     </>
   );
 }
