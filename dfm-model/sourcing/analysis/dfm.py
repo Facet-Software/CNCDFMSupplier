@@ -643,11 +643,93 @@ def _check_deep_features(tool_access, setup_analysis, planar_faces,
 # Public entry point
 # ---------------------------------------------------------------------------
 
+def _check_partial_holes(partial_holes: list) -> list:
+    """
+    Flag holes whose bore wall has been broken through by an intersecting
+    feature — a pocket, slot, or adjacent hole.
+
+    These are non-standard features that require the supplier to confirm
+    the intended geometry: is this intentional (e.g. a drain slot crossing
+    a bore), or a modelling error?
+    """
+    flags = []
+    for ph in partial_holes:
+        hi  = ph['hole_idx']
+        r   = ph['rep_radius_mm']
+        pct = ph['exposed_pct']
+        sev = ph['severity']
+        n_angles = len(ph['exposed_angles_deg'])
+        flags.append(_flag(
+            sev, 'partial_hole',
+            f"Hole {hi + 1} (⌀{r * 2:.2f} mm): bore wall intersected by another feature "
+            f"— {pct:.0f}% of circumference exposed "
+            f"({'major breakthrough' if sev == 'critical' else 'minor clipping'}). "
+            f"Confirm geometry is intentional.",
+            hole_idx=hi,
+            face_idxs=ph['face_idxs'],
+            rep_radius_mm=r,
+            exposed_pct=pct,
+            exposed_angles_deg=ph['exposed_angles_deg'],
+        ))
+    return flags
+
+
+def _check_thin_walls(thin_walls: list, hole_proximity_walls: list) -> list:
+    """
+    Convert detected thin wall regions and hole proximity webs into DFM flags.
+
+    thin_walls            — from detect_thin_walls() (planar pair, concentric
+                            cylinder, and ray-cast regions)
+    hole_proximity_walls  — from detect_hole_proximity_walls() (webs between
+                            adjacent drilled holes)
+    """
+    flags = []
+
+    for i, tw in enumerate(thin_walls):
+        t   = tw['min_thickness_mm']
+        r   = tw['max_aspect_ratio']
+        sev = tw['severity']   # already 'warning' or 'critical'
+        face_str = f"faces {tw['face_idxs']}" if len(tw['face_idxs']) <= 4 else f"{len(tw['face_idxs'])} faces"
+        flags.append(_flag(
+            sev, 'thin_wall',
+            f"Thin wall region {i+1} ({face_str}): "
+            f"{t:.2f} mm thick, aspect ratio {r:.1f}:1 — "
+            f"{'deflection and chatter risk' if sev == 'critical' else 'verify rigidity during machining'}",
+            region_idx=i,
+            min_thickness_mm=t,
+            max_aspect_ratio=r,
+            face_idxs=tw['face_idxs'],
+        ))
+
+    for hw in hole_proximity_walls:
+        i, j = hw['hole_pair_idxs']
+        web  = hw['web_thickness_mm']
+        sev  = 'critical' if hw['severity'] in ('critical', 'intersecting') else 'warning'
+        if hw['severity'] == 'intersecting':
+            msg = (f"Holes {i+1} and {j+1} intersect — web thickness ≤ 0 mm, "
+                   f"overlapping bores require combined operation or EDM")
+        else:
+            r   = hw.get('aspect_ratio') or 0
+            msg = (f"Thin web between holes {i+1} and {j+1}: "
+                   f"{web:.2f} mm wall, aspect ratio {r:.1f}:1 — "
+                   f"risk of breakthrough during drilling")
+        flags.append(_flag(
+            sev, 'thin_wall_hole_proximity', msg,
+            hole_pair_idxs=hw['hole_pair_idxs'],
+            web_thickness_mm=web,
+        ))
+
+    return flags
+
+
 def analyze_dfm(hole_profiles: list, fillets: list,
                 tool_access: list = None, setup_analysis: dict = None,
                 planar_faces: list = None, bbox_extents: tuple = None,
                 shape=None, face_list: list = None,
-                face_to_edges: dict = None, edge_to_faces: dict = None) -> dict:
+                face_to_edges: dict = None, edge_to_faces: dict = None,
+                thin_walls: list = None,
+                hole_proximity_walls: list = None,
+                partial_holes: list = None) -> dict:
     """
     Run all DFM checks and return a structured result.
 
@@ -668,6 +750,8 @@ def analyze_dfm(hole_profiles: list, fillets: list,
                                       edge_to_faces=edge_to_faces))
     flags.extend(_check_deep_features(tool_access, setup_analysis, planar_faces,
                                       bbox_extents=bbox_extents))
+    flags.extend(_check_thin_walls(thin_walls or [], hole_proximity_walls or []))
+    flags.extend(_check_partial_holes(partial_holes or []))
 
     # Sort: critical first, then warning, then advisory
     _order = {'critical': 0, 'warning': 1, 'advisory': 2}

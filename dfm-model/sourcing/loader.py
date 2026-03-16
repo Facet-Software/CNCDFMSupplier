@@ -1,15 +1,13 @@
 # sourcing/loader.py
-# Loads a STEP file and applies scale correction if the model is in metres.
+# Loads a STEP file, detects unit system (mm, metres, or inches),
+# normalises everything to internal mm, and returns display_unit so
+# the report can render values in the original unit.
 
 import os
+import re
 import logging
 
 from OCC.Core.STEPControl import STEPControl_Reader
-from OCC.Core.TopExp import TopExp_Explorer
-from OCC.Core.TopAbs import TopAbs_FACE
-from OCC.Core.TopoDS import topods
-from OCC.Core.BRepAdaptor import BRepAdaptor_Surface
-from OCC.Core import GeomAbs
 from OCC.Core.Bnd import Bnd_Box
 from OCC.Core.BRepBndLib import brepbndlib
 from OCC.Core.gp import gp_Trsf, gp_Pnt
@@ -17,19 +15,88 @@ from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_Transform
 
 logger = logging.getLogger(__name__)
 
+# 1 inch = 25.4 mm
+_MM_PER_INCH = 25.4
+
+
+def _detect_step_unit(filepath, max_bytes=131072):
+    """
+    Scan the first max_bytes of a STEP file for unit declarations.
+
+    STEP AP203/AP214 embeds unit info in the DATA section as entities like:
+
+        SI_UNIT($,.MILLI.,.METRE.)           -> mm
+        SI_UNIT($,.METRE.)                   -> metres
+        CONVERSION_BASED_UNIT('INCH',25.4    -> inches
+        CONVERSION_BASED_UNIT('in',25.4      -> inches (alternate spelling)
+        CONVERSION_BASED_UNIT('FOOT',        -> feet (rare)
+
+    Returns 'mm' | 'inch' | 'metre' | 'unknown'.
+    Text scan is used rather than OCC's unit API because the API behaviour
+    varies across OCC versions and is unreliable for non-SI files.
+    """
+    try:
+        with open(filepath, 'rb') as f:
+            raw = f.read(max_bytes)
+        text = raw.decode('ascii', errors='replace').upper()
+    except OSError:
+        return 'unknown'
+
+    # Inch: CONVERSION_BASED_UNIT with 'INCH' or 'IN' label
+    if re.search(r"CONVERSION_BASED_UNIT\s*\(\s*'(INCH|IN)\b", text):
+        return 'inch'
+
+    # Feet (rare but possible in imported architectural models)
+    if re.search(r"CONVERSION_BASED_UNIT\s*\(\s*'(FOOT|FT|FEET)\b", text):
+        return 'foot'
+
+    # SI metre without MILLI prefix
+    if re.search(r"SI_UNIT\s*\(\s*\$\s*,\s*\.METRE\.", text) and \
+       not re.search(r"SI_UNIT\s*\(\s*\$\s*,\s*\.MILLI\.\s*,\s*\.METRE\.", text):
+        return 'metre'
+
+    # SI millimetre (most common)
+    if re.search(r"SI_UNIT\s*\(\s*\$\s*,\s*\.MILLI\.\s*,\s*\.METRE\.", text):
+        return 'mm'
+
+    return 'unknown'
+
 
 def load_step_file(filepath):
     """
-    Load a STEP file, detect metre-vs-mm scale mismatch, and return
-    (shape, scale_factor).
+    Load a STEP file, detect unit system, normalise to internal mm, and
+    return (shape, scale_factor, display_unit).
 
-    scale_factor is 1.0 if the model was already in mm, or 0.001 if it
-    was in metres and has been rescaled to mm.  All downstream code works
-    in mm; scale_factor is passed along so area computations can correct
-    for the transform.
+    Internal representation
+    -----------------------
+    All downstream code works in mm. After this function returns:
+        length_mm  = occ_value x 1000
+        area_mm2   = occ_area  / scale_factor^2
+        volume_mm3 = occ_vol   / scale_factor^3
+
+    scale_factor is always 0.001 (the spatial transform applied or implied).
+
+    display_unit
+    ------------
+    'mm'     -- original file was in millimetres (most common)
+    'inch'   -- original file was in inches
+    'metre'  -- original file was in metres
+    'unknown'-- could not determine; display in mm as fallback
+
+    Note on OCC inch handling
+    -------------------------
+    OCC converts declared inches to mm internally when reading. So after
+    reader.TransferRoots(), coordinates in an inch file are already in mm
+    (e.g. a 1-inch cube reads as 25.4 x 25.4 x 25.4 in raw OCC coords).
+    The same x0.001 normalisation therefore applies to both mm and inch files.
+    Only metre files skip the transform.
     """
     if not os.path.exists(filepath):
         raise FileNotFoundError(f"STEP file not found: {filepath}")
+
+    # Detect unit BEFORE loading — scan raw text
+    declared_unit = _detect_step_unit(filepath)
+    logger.debug(f"STEP unit declaration: {declared_unit}")
 
     reader = STEPControl_Reader()
     status = reader.ReadFile(filepath)
@@ -57,44 +124,29 @@ def load_step_file(filepath):
     )
     logger.debug(f"Raw dimensions: dx={dx_raw:.4f}, dy={dy_raw:.4f}, dz={dz_raw:.4f}")
 
-    # Determine unit system from bounding box size.
-    #
-    # A real machined part in mm will have max_dim >> 1.0 (typically 5–5000 mm).
-    # A model in metres will have max_dim << 1.0 (a 100 mm part = 0.1 m).
-    #
-    # Two cases, both end up with scale_factor = 0.001 so all downstream
-    # `* 1000` unit conversions are correct:
-    #
-    #   mm file  (max_dim > 1.0): apply *0.001 spatial transform.
-    #            model unit = 0.001 mm → *1000 → mm ✓
-    #            area: props.Mass() in (0.001 mm)² / 0.001² → mm² ✓
-    #
-    #   metre file (max_dim ≤ 1.0): NO spatial transform needed.
-    #            model unit = 1 m = 1000 mm → *1000 → 1000 mm ✗ …
-    #            wait: model unit = 1 m, raw coord 0.005 m, *1000 = 5 mm ✓
-    #            area: props.Mass() in m² / 0.001² = m² * 10⁶ = mm² ✓
-    #            (1 m² = 10⁶ mm²)
-    #
-    # The cylinder-probe heuristic (radius * 1000 > max_dim * 50) was
-    # unreliable — it fired for r=5 mm but not r=4 mm in a 99 mm part,
-    # depending which cylinder face happened to be enumerated first.
+    scale_factor = 0.001   # always; downstream multiplies by 1000 to get mm
 
-    scale_factor = 0.001   # always; downstream code uses *1000 / scale_factor²
+    # Metre files have raw coords in metres (max_dim ~ 0.001 to 1.0).
+    # mm and inch files have raw coords already in mm after OCC reads them
+    # (max_dim >> 1.0 for any real machined part).
+    is_metric_metre = (declared_unit == 'metre') or \
+                      (declared_unit == 'unknown' and max_dim_raw <= 1.0)
 
-    if max_dim_raw > 1.0:
-        # mm file — normalise to 0.001 mm model units
+    if is_metric_metre:
+        display_unit = 'metre' if declared_unit == 'metre' else 'mm'
+        logger.debug(
+            f"Metre file (max_dim={max_dim_raw:.4f}): "
+            f"no transform; downstream x1000 converts m -> mm."
+        )
+    else:
         trsf = gp_Trsf()
         trsf.SetScale(gp_Pnt(0, 0, 0), scale_factor)
         shape = BRepBuilderAPI_Transform(shape, trsf, True).Shape()
+        display_unit = declared_unit if declared_unit in ('mm', 'inch') else 'mm'
         logger.debug(
-            f"mm file detected (max_dim={max_dim_raw:.1f}): "
-            f"applied 1/1000 normalisation."
-        )
-    else:
-        # metre file — model coordinates already give mm when multiplied by 1000
-        logger.debug(
-            f"Metre file detected (max_dim={max_dim_raw:.4f}): "
-            f"no spatial transform; downstream *1000 converts m → mm."
+            f"{display_unit.upper()} file detected (max_dim={max_dim_raw:.1f}): "
+            f"applied x{scale_factor} normalisation."
         )
 
-    return shape, scale_factor
+    logger.debug(f"display_unit={display_unit!r}")
+    return shape, scale_factor, display_unit
