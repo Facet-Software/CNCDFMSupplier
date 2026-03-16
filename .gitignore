@@ -46,3 +46,21 @@ next-env.d.ts
 uploads/
 dev.db
 *.db
+
+# Python
+__pycache__/
+*.pyc
+
+# Environment
+.env
+.env.local
+
+# Uploads (customer files)
+uploads/
+
+# Dependencies
+node_modules/
+
+# macOS
+.DS_Store
+__MACOSX/
