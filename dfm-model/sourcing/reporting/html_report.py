@@ -17,14 +17,15 @@ const HOLE_LABELS = {
   through_countersink: "Countersink",
   blind_flat:          "Blind (flat)",
   blind_with_tip:      "Blind (drill tip)",
+  thread:              "Thread",
 };
-const SEV_COLOR  = { critical: "#c0392b", warning: "#d97706", advisory: "#6b7280" };
-const SEV_BG     = { critical: "#fef2f2", warning: "#fffbeb", advisory: "#f9fafb" };
-const SEV_BORDER = { critical: "#fca5a5", warning: "#fcd34d", advisory: "#e5e7eb" };
-const SEV_LABEL  = { critical: "CRITICAL", warning: "WARNING", advisory: "ADVISORY" };
+const SEV_COLOR  = { critical: "#c0392b", warning: "#d97706", advisory: "#6b7280", info: "#2563eb" };
+const SEV_BG     = { critical: "#fef2f2", warning: "#fffbeb", advisory: "#f9fafb", info: "#eff6ff" };
+const SEV_BORDER = { critical: "#fca5a5", warning: "#fcd34d", advisory: "#e5e7eb", info: "#bfdbfe" };
+const SEV_LABEL  = { critical: "CRITICAL", warning: "WARNING", advisory: "ADVISORY", info: "FEATURE" };
 
 // ── 3D VIEWER ─────────────────────────────────────────────────────────────────
-function Viewer3D({ selectedFaceIdxs, labelText, labelSev, activeFixture, snapRef, captureRef }) {
+function Viewer3D({ selectedFaceIdxs, labelText, labelSev, activeFixture, snapRef, captureRef, onOrbitRef, onDeselect }) {
   const containerRef = React.useRef(null);
   const threeRef     = React.useRef({});
   const svgLineRef   = React.useRef(null);
@@ -58,8 +59,10 @@ function Viewer3D({ selectedFaceIdxs, labelText, labelSev, activeFixture, snapRe
     const faceMeshes = {};
     const MAT_DEFAULT   = () => new THREE.MeshPhongMaterial({ color: 0xd0cbc3, specular: 0x222222, shininess: 18, side: THREE.DoubleSide });
     const MAT_HIGHLIGHT = () => new THREE.MeshPhongMaterial({ color: 0xf97316, specular: 0x441100, shininess: 30, emissive: new THREE.Color(0x1a0500), side: THREE.DoubleSide });
-    const MAT_DIM       = () => new THREE.MeshPhongMaterial({ color: 0xe0dbd4, specular: 0x111111, shininess: 5, side: THREE.DoubleSide, transparent: true, opacity: 0.35 });
+    const MAT_DIM       = () => new THREE.MeshPhongMaterial({ color: 0xddd8d1, specular: 0x111111, shininess: 5, side: THREE.DoubleSide });
     const MAT_FIXTURE   = () => new THREE.MeshPhongMaterial({ color: 0xc7d8f5, specular: 0x1133aa, shininess: 22, side: THREE.DoubleSide });
+    const MAT_REST      = () => new THREE.MeshPhongMaterial({ color: 0x34d399, specular: 0x116633, shininess: 28, emissive: new THREE.Color(0x052e16), side: THREE.DoubleSide });
+    const MAT_CLAMP     = () => new THREE.MeshPhongMaterial({ color: 0xfbbf24, specular: 0x664400, shininess: 28, emissive: new THREE.Color(0x1c1000), side: THREE.DoubleSide });
 
     let bbox = new THREE.Box3();
     R.geometry.forEach(fd => {
@@ -95,6 +98,60 @@ function Viewer3D({ selectedFaceIdxs, labelText, labelSev, activeFixture, snapRe
       );
       camera.lookAt(target);
     }
+
+    // --- Coordinate axes gizmo (bottom-left corner) ---
+    const gizmoScene  = new THREE.Scene();
+    const gizmoSize   = 90; // px
+    const gizmoCam    = new THREE.OrthographicCamera(-1.8, 1.8, 1.8, -1.8, 0.1, 100);
+
+    // Axis shafts + cones for X (red), Y (green), Z (blue)
+    const axisLen = 1.0;
+    const axisDirs = [
+      { dir: new THREE.Vector3(1,0,0), color: 0xef4444, label: "X" },
+      { dir: new THREE.Vector3(0,1,0), color: 0x22c55e, label: "Y" },
+      { dir: new THREE.Vector3(0,0,1), color: 0x3b82f6, label: "Z" },
+    ];
+    axisDirs.forEach(({ dir, color }) => {
+      // Shaft
+      const shaftGeo = new THREE.CylinderGeometry(0.04, 0.04, axisLen, 6);
+      shaftGeo.translate(0, axisLen / 2, 0);
+      shaftGeo.rotateX(Math.PI / 2);
+      const shaft = new THREE.Mesh(shaftGeo, new THREE.MeshBasicMaterial({ color }));
+      shaft.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), dir);
+      gizmoScene.add(shaft);
+      // Cone tip
+      const coneGeo = new THREE.ConeGeometry(0.1, 0.25, 8);
+      coneGeo.translate(0, 0.125, 0);
+      coneGeo.rotateX(Math.PI / 2);
+      const cone = new THREE.Mesh(coneGeo, new THREE.MeshBasicMaterial({ color }));
+      cone.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), dir);
+      cone.position.copy(dir.clone().multiplyScalar(axisLen));
+      gizmoScene.add(cone);
+    });
+    // Origin sphere
+    gizmoScene.add(new THREE.Mesh(
+      new THREE.SphereGeometry(0.07, 8, 8),
+      new THREE.MeshBasicMaterial({ color: 0x9ca3af })
+    ));
+
+    // Axis labels as canvas sprites
+    function makeLabel(text, color) {
+      const canvas = document.createElement('canvas');
+      canvas.width = 64; canvas.height = 64;
+      const ctx = canvas.getContext('2d');
+      ctx.font = 'bold 48px sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillStyle = color;
+      ctx.fillText(text, 32, 32);
+      const tex = new THREE.CanvasTexture(canvas);
+      const mat = new THREE.SpriteMaterial({ map: tex, depthTest: false });
+      const sprite = new THREE.Sprite(mat);
+      sprite.scale.set(0.4, 0.4, 0.4);
+      return sprite;
+    }
+    const labelX = makeLabel('X', '#ef4444'); labelX.position.set(1.45, 0, 0); gizmoScene.add(labelX);
+    const labelY = makeLabel('Y', '#22c55e'); labelY.position.set(0, 1.45, 0); gizmoScene.add(labelY);
+    const labelZ = makeLabel('Z', '#3b82f6'); labelZ.position.set(0, 0, 1.45); gizmoScene.add(labelZ);
     updateCamera();
 
     // Controls
@@ -107,18 +164,21 @@ function Viewer3D({ selectedFaceIdxs, labelText, labelSev, activeFixture, snapRe
         orbit.theta -= dx * 0.008;
         orbit.phi = Math.max(0.05, Math.min(Math.PI - 0.05, orbit.phi + dy * 0.008));
         updateCamera();
+        if (onOrbitRef && onOrbitRef.current) onOrbitRef.current();
       } else if (orbit.isPanning) {
         const right = new THREE.Vector3().crossVectors(camera.getWorldDirection(new THREE.Vector3()), camera.up).normalize();
         const up    = camera.up.clone().normalize();
         const s = orbit.radius * 0.001;
         orbit.target.addScaledVector(right, -dx * s).addScaledVector(up, dy * s);
         updateCamera();
+        if (onOrbitRef && onOrbitRef.current) onOrbitRef.current();
       }
     };
     const onUp    = () => { orbit.isDragging = false; orbit.isPanning = false; };
     const onWheel = (e) => {
       orbit.radius = Math.max(maxDim * 0.1, Math.min(maxDim * 10, orbit.radius * (1 + e.deltaY * 0.001)));
       updateCamera(); e.preventDefault();
+      if (onOrbitRef && onOrbitRef.current) onOrbitRef.current();
     };
     canvas.addEventListener('mousedown', onDown);
     window.addEventListener('mousemove', onMove);
@@ -140,11 +200,13 @@ function Viewer3D({ selectedFaceIdxs, labelText, labelSev, activeFixture, snapRe
         orbit.theta -= dx * 0.008;
         orbit.phi = Math.max(0.05, Math.min(Math.PI - 0.05, orbit.phi + dy * 0.008));
         updateCamera();
+        if (onOrbitRef && onOrbitRef.current) onOrbitRef.current();
       }
       if (e.touches.length === 2) {
         const d = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
         orbit.radius = Math.max(maxDim * 0.1, Math.min(maxDim * 10, orbit.radius * ltd / d));
         ltd = d; updateCamera();
+        if (onOrbitRef && onOrbitRef.current) onOrbitRef.current();
       }
       e.preventDefault();
     }, { passive: false });
@@ -177,6 +239,25 @@ function Viewer3D({ selectedFaceIdxs, labelText, labelSev, activeFixture, snapRe
 
       renderer.render(scene, camera);
 
+      // Render coordinate axes gizmo in bottom-left corner
+      renderer.autoClear = false;
+      const gY = el.clientHeight - gizmoSize;
+      renderer.setViewport(0, gY, gizmoSize, gizmoSize);
+      renderer.setScissor(0, gY, gizmoSize, gizmoSize);
+      renderer.setScissorTest(true);
+      renderer.clearDepth();
+      gizmoCam.position.set(
+        4 * Math.sin(orbit.phi) * Math.cos(orbit.theta),
+        4 * Math.cos(orbit.phi),
+        4 * Math.sin(orbit.phi) * Math.sin(orbit.theta),
+      );
+      gizmoCam.lookAt(0, 0, 0);
+      renderer.render(gizmoScene, gizmoCam);
+      renderer.setViewport(0, 0, el.clientWidth, el.clientHeight);
+      renderer.setScissor(0, 0, el.clientWidth, el.clientHeight);
+      renderer.setScissorTest(false);
+      renderer.autoClear = true;
+
       // SVG leader line
       const idxs = selectedRef.current;
       if (idxs.length > 0 && svgLineRef.current && svgDotRef.current) {
@@ -191,7 +272,7 @@ function Viewer3D({ selectedFaceIdxs, labelText, labelSev, activeFixture, snapRe
           const rect = canvas.getBoundingClientRect();
           const px = (sp.x * 0.5 + 0.5) * rect.width;
           const py = (-sp.y * 0.5 + 0.5) * rect.height;
-          svgLineRef.current.setAttribute('x1', 18); svgLineRef.current.setAttribute('y1', 18);
+          svgLineRef.current.setAttribute('x1', 18); svgLineRef.current.setAttribute('y1', rect.height - 18);
           svgLineRef.current.setAttribute('x2', px);  svgLineRef.current.setAttribute('y2', py);
           svgDotRef.current.setAttribute('cx', px);   svgDotRef.current.setAttribute('cy', py);
           svgLineRef.current.style.display = ''; svgDotRef.current.style.display = '';
@@ -203,7 +284,7 @@ function Viewer3D({ selectedFaceIdxs, labelText, labelSev, activeFixture, snapRe
     }
     animate();
 
-    threeRef.current = { renderer, scene, camera, faceMeshes, MAT_DEFAULT, MAT_HIGHLIGHT, MAT_DIM, MAT_FIXTURE, center, maxDim, orbit, updateCamera };
+    threeRef.current = { renderer, scene, camera, faceMeshes, MAT_DEFAULT, MAT_HIGHLIGHT, MAT_DIM, MAT_FIXTURE, MAT_REST, MAT_CLAMP, center, maxDim, orbit, updateCamera };
 
     // Expose snap function
     if (snapRef) snapRef.current = (approachVec) => {
@@ -250,15 +331,36 @@ function Viewer3D({ selectedFaceIdxs, labelText, labelSev, activeFixture, snapRe
     // Determine fixture face set (for coloring when no dfm selection)
     const fixSet = new Set(activeFixture ? activeFixture.face_idxs : []);
 
+    // Workholding: only the BEST (first) rest face and BEST (first) clamp pair.
+    // A machinist picks one datum surface and one vise pair, not all candidates.
+    const restSet  = new Set();
+    const clampSet = new Set();
+    if (activeFixture && activeFixture.workholding) {
+      const wh = activeFixture.workholding;
+      if (wh.rest_faces && wh.rest_faces.length > 0) {
+        restSet.add(wh.rest_faces[0].face_idx);
+      }
+      if (wh.clamp_pairs && wh.clamp_pairs.length > 0) {
+        clampSet.add(wh.clamp_pairs[0].face_idx_a);
+        clampSet.add(wh.clamp_pairs[0].face_idx_b);
+      }
+    }
+
     Object.entries(t.faceMeshes).forEach(([idxStr, mesh]) => {
       const idx = parseInt(idxStr);
       if (hasSelection) {
-        if (selSet.has(idx))       mesh.material = t.MAT_HIGHLIGHT();
-        else if (fixSet.has(idx))  mesh.material = t.MAT_FIXTURE();
-        else                       mesh.material = t.MAT_DIM();
+        // DFM selection active: orange for selected, workholding colors, fixture blue, rest dimmed
+        if (selSet.has(idx))         mesh.material = t.MAT_HIGHLIGHT();
+        else if (restSet.has(idx))   mesh.material = t.MAT_REST();
+        else if (clampSet.has(idx))  mesh.material = t.MAT_CLAMP();
+        else if (fixSet.has(idx))    mesh.material = t.MAT_FIXTURE();
+        else                         mesh.material = t.MAT_DIM();
       } else if (activeFixture) {
-        if (fixSet.has(idx))  mesh.material = t.MAT_FIXTURE();
-        else                  mesh.material = t.MAT_DIM();
+        // Fixture active, no DFM selection: workholding colors, fixture blue, rest dimmed
+        if (restSet.has(idx))        mesh.material = t.MAT_REST();
+        else if (clampSet.has(idx))  mesh.material = t.MAT_CLAMP();
+        else if (fixSet.has(idx))    mesh.material = t.MAT_FIXTURE();
+        else                         mesh.material = t.MAT_DIM();
       } else {
         mesh.material = t.MAT_DEFAULT();
       }
@@ -286,7 +388,7 @@ function Viewer3D({ selectedFaceIdxs, labelText, labelSev, activeFixture, snapRe
     // Arrow — positioned outside the part on the approach side, pointing toward part
     const arrowLen  = maxDim * 0.45;
     const arrowFrom = center.clone().addScaledVector(dir, maxDim * 1.05);
-    const arrowDir  = dir.clone().negate();  // arrow points FROM outside TOWARD part
+    const arrowDir  = dir.clone().negate();
     const arrow = new THREE.ArrowHelper(arrowDir, arrowFrom, arrowLen, 0x2563eb, arrowLen * 0.28, arrowLen * 0.18);
     // Make shaft and head thicker for visibility
     arrow.line.material.linewidth = 3;
@@ -295,14 +397,33 @@ function Viewer3D({ selectedFaceIdxs, labelText, labelSev, activeFixture, snapRe
 
     // Edge wireframes for every face in this fixturing
     const fixSet = new Set(activeFixture.face_idxs);
+    // Only the BEST rest face and BEST clamp pair — matches highlight logic
+    const restSet  = new Set();
+    const clampSet = new Set();
+    if (activeFixture.workholding) {
+      const wh = activeFixture.workholding;
+      if (wh.rest_faces && wh.rest_faces.length > 0) {
+        restSet.add(wh.rest_faces[0].face_idx);
+      }
+      if (wh.clamp_pairs && wh.clamp_pairs.length > 0) {
+        clampSet.add(wh.clamp_pairs[0].face_idx_a);
+        clampSet.add(wh.clamp_pairs[0].face_idx_b);
+      }
+    }
+
     R.geometry.forEach(fd => {
-      if (!fixSet.has(fd.i)) return;
+      const inFix   = fixSet.has(fd.i);
+      const inRest  = restSet.has(fd.i);
+      const inClamp = clampSet.has(fd.i);
+      if (!inFix && !inRest && !inClamp) return;
       try {
         const geo  = new THREE.BufferGeometry();
         geo.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(fd.v), 3));
         geo.setIndex(fd.t);
         const edgeGeo = new THREE.EdgesGeometry(geo, 15);  // crease angle 15°
-        const mat = new THREE.LineBasicMaterial({ color: 0x1d4ed8, linewidth: 2 });
+        // Color: green for rest, amber for clamp, blue for fixture
+        const edgeColor = inRest ? 0x059669 : inClamp ? 0xb45309 : 0x1d4ed8;
+        const mat = new THREE.LineBasicMaterial({ color: edgeColor, linewidth: 2 });
         const lines = new THREE.LineSegments(edgeGeo, mat);
         t.scene.add(lines);
         edgesRef.current.push(lines);
@@ -323,7 +444,7 @@ function Viewer3D({ selectedFaceIdxs, labelText, labelSev, activeFixture, snapRe
 
       {labelText && selectedFaceIdxs.length > 0 && (
         <div style={{
-          position: "absolute", top: 10, left: 10,
+          position: "absolute", bottom: 10, left: 10,
           background: "#fff", border: `1.5px solid ${SEV_BORDER[labelSev] || "#e5e7eb"}`,
           borderLeft: `3px solid ${SEV_COLOR[labelSev] || "#374151"}`,
           borderRadius: 5, padding: "8px 12px",
@@ -335,9 +456,35 @@ function Viewer3D({ selectedFaceIdxs, labelText, labelSev, activeFixture, snapRe
       )}
 
       {activeFixture && !labelText && (
-        <div style={{ position: "absolute", top: 10, left: 10, background: "rgba(37,99,235,0.08)", border: "1px solid rgba(37,99,235,0.25)", borderLeft: "3px solid #2563eb", borderRadius: 5, padding: "7px 12px", pointerEvents: "none" }}>
+        <div style={{ position: "absolute", bottom: 10, left: 10, background: "rgba(255,255,255,0.95)", border: "1px solid rgba(37,99,235,0.25)", borderLeft: "3px solid #2563eb", borderRadius: 5, padding: "7px 12px", pointerEvents: "none", maxWidth: 280 }}>
           <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.12em", color: "#2563eb", textTransform: "uppercase", marginBottom: 2 }}>FIXTURING {activeFixture.label}</div>
-          <div style={{ fontSize: 10, color: "#374151" }}>{activeFixture.face_idxs.length} surfaces assigned · approach {activeFixture.label}</div>
+          <div style={{ fontSize: 10, color: "#374151", marginBottom: 4 }}>{activeFixture.face_idxs.length} surfaces assigned · approach {activeFixture.label}</div>
+          {activeFixture.workholding && (
+            <div style={{ borderTop: "1px solid #e5e7eb", paddingTop: 4, marginTop: 2 }}>
+              <div style={{ fontSize: 9, fontWeight: 600, color: "#6b7280", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 3 }}>WORKHOLDING: {activeFixture.workholding.class.replace(/_/g, " ")}</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                  <div style={{ width: 10, height: 10, borderRadius: 2, background: "#34d399", border: "1px solid #059669", flexShrink: 0 }} />
+                  <span style={{ fontSize: 9, color: "#374151" }}>Rest / datum face{activeFixture.workholding.rest_faces && activeFixture.workholding.rest_faces.length > 0 ? "" : " — none"}</span>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                  <div style={{ width: 10, height: 10, borderRadius: 2, background: "#fbbf24", border: "1px solid #b45309", flexShrink: 0 }} />
+                  <span style={{ fontSize: 9, color: "#374151" }}>Clamp faces{activeFixture.workholding.clamp_pairs && activeFixture.workholding.clamp_pairs.length > 0 ? "" : " — none"}</span>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                  <div style={{ width: 10, height: 10, borderRadius: 2, background: "#c7d8f5", border: "1px solid #1d4ed8", flexShrink: 0 }} />
+                  <span style={{ fontSize: 9, color: "#374151" }}>Machined surfaces</span>
+                </div>
+              </div>
+              {activeFixture.workholding.warnings && activeFixture.workholding.warnings.length > 0 && (
+                <div style={{ marginTop: 4, paddingTop: 3, borderTop: "1px solid #fde68a" }}>
+                  {activeFixture.workholding.warnings.map((w, i) => (
+                    <div key={i} style={{ fontSize: 8, color: "#92400e", lineHeight: 1.4, marginBottom: 1 }}>⚠ {w}</div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 
@@ -346,6 +493,20 @@ function Viewer3D({ selectedFaceIdxs, labelText, labelSev, activeFixture, snapRe
           <div style={{ fontSize: 11, color: "#9ca3af", fontFamily: "'IBM Plex Mono', monospace" }}>NO GEOMETRY</div>
           <div style={{ fontSize: 10, color: "#d1cdc7" }}>STEP tessellation unavailable</div>
         </div>
+      )}
+
+      {(selectedFaceIdxs.length > 0 || activeFixture) && onDeselect && (
+        <button
+          onClick={onDeselect}
+          title="Clear selection"
+          style={{
+            position: "absolute", top: 10, right: 10,
+            width: 28, height: 28, borderRadius: 5,
+            background: "rgba(255,255,255,0.9)", border: "1px solid #d1d5db",
+            cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+            fontSize: 14, color: "#6b7280", boxShadow: "0 1px 3px rgba(0,0,0,0.1)",
+          }}
+        >✕</button>
       )}
     </div>
   );
@@ -363,9 +524,19 @@ function App() {
   const [labelText, setLabelText] = React.useState("");
   const [labelSev,  setLabelSev]  = React.useState("advisory");
   const [activeFixture, setActiveFixture] = React.useState(null);
+  const [snappedFixId, setSnappedFixId]   = React.useState(null);
   const snapRef    = React.useRef(null);
   const captureRef = React.useRef(null);
+  const onOrbitRef = React.useRef(null);
   const [pdfBusy, setPdfBusy] = React.useState(false);
+
+  // Clear snapped state when user manually orbits/pans/zooms
+  onOrbitRef.current = () => setSnappedFixId(null);
+
+  function deselectAll() {
+    setSelectedFaceIdxs([]); setLabelText(""); setLabelSev("advisory");
+    setActiveFixture(null); setSnappedFixId(null);
+  }
 
   async function buildPDF() {
     if (pdfBusy) return;
@@ -644,7 +815,7 @@ function App() {
   function toggleFixture(fix) {
     if (activeFixture && activeFixture.id === fix.id) {
       setActiveFixture(null);
-      // restore default face colors by clearing selection
+      setSnappedFixId(null);
     } else {
       setActiveFixture(fix);
       setSelectedFaceIdxs([]); setLabelText(""); setLabelSev("advisory");
@@ -653,6 +824,7 @@ function App() {
 
   function snapToFixture(fix) {
     if (snapRef.current) snapRef.current(fix.approach_vector);
+    setSnappedFixId(fix.id);
   }
 
   // ── DFM flag grouping ──
@@ -667,6 +839,12 @@ function App() {
     thin_wall:                "Thin Wall",
     thin_wall_hole_proximity: "Thin Wall — Hole Proximity",
     partial_hole:             "Partial / Intersected Hole",
+    no_datum_face:            "No Datum Face",
+    datum_face_features:      "Datum Face Has Features",
+    cog_instability:          "Centre of Gravity Instability",
+    no_clamp_pair:            "No Vise Clamping Pair",
+    clamp_face_features:      "Clamp Face Has Features",
+    custom_fixture:           "Custom Fixture Required",
   };
   const groups = [];
   const seen = {};
@@ -761,6 +939,8 @@ function App() {
                 activeFixture={activeFixture}
                 snapRef={snapRef}
                 captureRef={captureRef}
+                onOrbitRef={onOrbitRef}
+                onDeselect={deselectAll}
               />
             </div>
           </div>
@@ -802,24 +982,35 @@ function App() {
                       </div>
                       <div style={{ fontSize: 10, color: "#6b7280" }}>
                         {[f.planar > 0 && `${f.planar} planar`, f.fillets > 0 && `${f.fillets} fillet${f.fillets > 1?"s":""}`, f.min_tool_dia && `⌀${f.min_tool_dia}${R.unit_label}`, `~${f.tool_changes} chg`].filter(Boolean).join(" · ")}
+                        {f.workholding && (
+                          <span style={{
+                            marginLeft: 6, fontSize: 8, fontWeight: 600, padding: "1px 5px", borderRadius: 3, letterSpacing: "0.06em",
+                            background: f.workholding.class === "vise" ? "#ecfdf5" : f.workholding.class === "toe_clamp" ? "#fffbeb" : f.workholding.class === "soft_jaw" ? "#fef3c7" : "#fef2f2",
+                            color:      f.workholding.class === "vise" ? "#059669" : f.workholding.class === "toe_clamp" ? "#d97706" : f.workholding.class === "soft_jaw" ? "#b45309" : "#dc2626",
+                            border:     `1px solid ${f.workholding.class === "vise" ? "#a7f3d0" : f.workholding.class === "toe_clamp" ? "#fde68a" : f.workholding.class === "soft_jaw" ? "#fcd34d" : "#fca5a5"}`,
+                          }}>{f.workholding.class.replace(/_/g, " ").toUpperCase()}</span>
+                        )}
                       </div>
                       <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, textAlign: "right" }}>{f.holes}</div>
                       <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, textAlign: "right" }}>{f.planar}</div>
                       <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, fontWeight: tc > 0 ? 600 : 400, color: fc, textAlign: "right" }}>{tc || "—"}</div>
                       <div style={{ textAlign: "right" }}>
-                        {HAS_GEO && (
-                          <button
-                            onClick={e => { e.stopPropagation(); if (!isActiveFix) toggleFixture(f); snapToFixture(f); }}
-                            title="View from tool direction"
-                            style={{
-                              fontFamily: "'IBM Plex Mono', monospace", fontSize: 9,
-                              padding: "3px 7px", borderRadius: 4, cursor: "pointer",
-                              background: isActiveFix ? "#2563eb" : "#f1f5f9",
-                              color: isActiveFix ? "#fff" : "#64748b",
-                              border: isActiveFix ? "1px solid #1d4ed8" : "1px solid #e2e8f0",
-                            }}
-                          >↗ VIEW</button>
-                        )}
+                        {HAS_GEO && (() => {
+                          const isSnapped = snappedFixId === f.id;
+                          return (
+                            <button
+                              onClick={e => { e.stopPropagation(); if (!isActiveFix) toggleFixture(f); snapToFixture(f); }}
+                              title="View from tool direction"
+                              style={{
+                                fontFamily: "'IBM Plex Mono', monospace", fontSize: 9,
+                                padding: "3px 7px", borderRadius: 4, cursor: "pointer",
+                                background: isSnapped ? "#2563eb" : "#f1f5f9",
+                                color: isSnapped ? "#fff" : "#64748b",
+                                border: isSnapped ? "1px solid #1d4ed8" : "1px solid #e2e8f0",
+                              }}
+                            >↗ VIEW</button>
+                          );
+                        })()}
                       </div>
                     </div>
                   );
@@ -841,20 +1032,25 @@ function App() {
                   : R.holes.map((h, i) => {
                     const ldColor = !h.ld ? "#9ca3af" : h.ld >= 6 ? SEV_COLOR.critical : h.ld >= 4 ? SEV_COLOR.warning : "#374151";
                     const isBlind = h.type.startsWith("blind");
+                    const isThread = h.type === "thread";
                     const active = isActiveHole(h);
                     const hasGeoLink = HAS_GEO && h.face_idxs && h.face_idxs.length > 0;
+                    const typeLabel = isThread ? (h.thread || "Thread") : (HOLE_LABELS[h.type] || h.type);
+                    const badgeBg = isThread ? "#ede9fe" : isBlind ? "#fef3c7" : "#f0fdf4";
+                    const badgeColor = isThread ? "#6d28d9" : isBlind ? "#92400e" : "#14532d";
                     return (
                       <div
                         key={h.id}
                         className={hasGeoLink ? `clickable-row${active ? " active" : ""}` : ""}
-                        onClick={() => hasGeoLink && selectFaces(h.face_idxs, `${HOLE_LABELS[h.type] || h.type} — ⌀${(h.radius*2).toFixed(R.display_unit==="inch"?4:2)} ${R.unit_label}`, "advisory")}
+                        onClick={() => hasGeoLink && selectFaces(h.face_idxs, `${typeLabel} — ⌀${(h.radius*2).toFixed(R.display_unit==="inch"?4:2)} ${R.unit_label}`, "info")}
                         style={{ display: "grid", gridTemplateColumns: "1fr 58px 60px 44px", padding: "9px 12px", borderBottom: i < R.holes.length - 1 ? "1px solid #f0ede9" : "none", alignItems: "center" }}
                       >
                         <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-                          <span style={{ fontSize: 10, fontWeight: 500, color: isBlind ? "#92400e" : "#14532d", background: isBlind ? "#fef3c7" : "#f0fdf4", padding: "2px 6px", borderRadius: 3 }}>
-                            {HOLE_LABELS[h.type] || h.type}
+                          <span style={{ fontSize: 10, fontWeight: 500, color: badgeColor, background: badgeBg, padding: "2px 6px", borderRadius: 3 }}>
+                            {typeLabel}
                           </span>
                           {h.cone_angle && <span style={{ fontSize: 9, color: "#9ca3af" }}>{h.cone_angle}°</span>}
+                          {h.thread_pitch && <span style={{ fontSize: 9, color: "#9ca3af" }}>pitch {h.thread_pitch}</span>}
                         </div>
                         <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, color: "#374151", textAlign: "right" }}>{(h.radius * 2).toFixed(R.display_unit === "inch" ? 4 : 2)}</div>
                         <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, color: "#374151", textAlign: "right" }}>{h.depth.toFixed(R.display_unit === "inch" ? 4 : 1)}</div>
@@ -949,6 +1145,120 @@ function App() {
             <div style={{ background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 6, padding: "13px 16px", display: "flex", alignItems: "center", gap: 10 }}>
               <div style={{ width: 8, height: 8, borderRadius: "50%", background: "#16a34a", flexShrink: 0 }} />
               <div style={{ fontSize: 13, color: "#15803d", fontWeight: 500 }}>No manufacturing flags — part appears suitable for standard CNC machining.</div>
+            </div>
+          )}
+
+          {/* DRAWING INFO — only shown when a drawing PDF was parsed */}
+          {R.drawing && R.drawing.has_drawing && (
+            <div style={{ marginTop: 24 }}>
+              <SectionHead>Drawing Info <span style={{ fontWeight: 400, letterSpacing: 0, textTransform: "none", color: "#c4bfb8", fontSize: 9 }}>— extracted from PDF</span></SectionHead>
+              <div style={{ background: "#fff", border: "1px solid #e5e3df", borderRadius: 6, overflow: "hidden" }}>
+
+                {/* Summary row */}
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 1, background: "#e5e3df" }}>
+                  {[
+                    { label: "Material", value: R.drawing.material || "—" },
+                    { label: "Tightest Tolerance", value: R.drawing.tightest_tolerance != null ? `±${R.drawing.tightest_tolerance}` : "—", sub: R.drawing.tightest_tolerance_type || "" },
+                    { label: "Surface Finish", value: (() => {
+                      if (!R.drawing.has_surface_finish) return "—";
+                      const parts = [];
+                      if (R.drawing.surface_finish_general && R.drawing.surface_finish_general.length > 0)
+                        parts.push(`Ra ${R.drawing.surface_finish_general.join(", ")} (general)`);
+                      if (R.drawing.surface_finish_individual && R.drawing.surface_finish_individual.length > 0)
+                        parts.push(`Ra ${R.drawing.surface_finish_individual.join(", ")} (individual)`);
+                      return parts.length > 0 ? parts.join("; ") : "Specified";
+                    })() },
+                    { label: "Datums", value: R.drawing.datums && R.drawing.datums.length > 0 ? R.drawing.datums.join(", ") : "—" },
+                  ].map(cell => (
+                    <div key={cell.label} style={{ background: "#fff", padding: "10px 12px" }}>
+                      <div style={{ fontSize: 8, fontWeight: 600, letterSpacing: "0.12em", color: "#9ca3af", textTransform: "uppercase", marginBottom: 3 }}>{cell.label}</div>
+                      <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, color: "#1a1a1a", fontWeight: 500 }}>{cell.value}</div>
+                      {cell.sub && <div style={{ fontSize: 9, color: "#6d28d9", marginTop: 2, textTransform: "capitalize" }}>{cell.sub}</div>}
+                    </div>
+                  ))}
+                </div>
+
+                {/* General tolerance block — the title block .XX = ±.01 table */}
+                {R.drawing.general_tolerances && (
+                  <div style={{ borderTop: "1px solid #e5e3df", padding: "10px 12px" }}>
+                    <div style={{ fontSize: 8, fontWeight: 600, letterSpacing: "0.12em", color: "#9ca3af", textTransform: "uppercase", marginBottom: 6 }}>General Tolerances (Unless Otherwise Specified)</div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                      {Object.entries(R.drawing.general_tolerances).filter(([k]) => !isNaN(k)).sort(([a],[b]) => a - b).map(([places, val]) => (
+                        <div key={places} style={{ display: "flex", alignItems: "center", gap: 4, background: "#f9fafb", border: "1px solid #e5e7eb", borderRadius: 4, padding: "4px 8px" }}>
+                          <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, color: "#6b7280" }}>{"." + "X".repeat(Number(places))}</span>
+                          <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, color: "#1a1a1a", fontWeight: 500 }}>±{val}</span>
+                        </div>
+                      ))}
+                      {R.drawing.general_tolerances.angular_deg != null && (
+                        <div style={{ display: "flex", alignItems: "center", gap: 4, background: "#f9fafb", border: "1px solid #e5e7eb", borderRadius: 4, padding: "4px 8px" }}>
+                          <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, color: "#6b7280" }}>Angular</span>
+                          <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, color: "#1a1a1a", fontWeight: 500 }}>±{R.drawing.general_tolerances.angular_deg}°</span>
+                        </div>
+                      )}
+                      {R.drawing.general_tolerances.fractional != null && (
+                        <div style={{ display: "flex", alignItems: "center", gap: 4, background: "#f9fafb", border: "1px solid #e5e7eb", borderRadius: 4, padding: "4px 8px" }}>
+                          <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, color: "#6b7280" }}>Fractional</span>
+                          <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, color: "#1a1a1a", fontWeight: 500 }}>±{R.drawing.general_tolerances.fractional}</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* GD&T frames */}
+                {R.drawing.gdt && R.drawing.gdt.length > 0 && (
+                  <div style={{ borderTop: "1px solid #e5e3df", padding: "10px 12px" }}>
+                    <div style={{ fontSize: 8, fontWeight: 600, letterSpacing: "0.12em", color: "#9ca3af", textTransform: "uppercase", marginBottom: 6 }}>GD&T Callouts</div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                      {R.drawing.gdt.map((g, i) => (
+                        <div key={i} style={{ display: "flex", alignItems: "center", gap: 4, background: "#f5f3ff", border: "1px solid #ddd6fe", borderRadius: 4, padding: "4px 8px" }}>
+                          <span style={{ fontSize: 10, fontWeight: 600, color: "#6d28d9", textTransform: "capitalize" }}>{g.type.replace(/_/g, " ")}</span>
+                          <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, color: "#374151" }}>{g.tolerance}</span>
+                          {g.datums && g.datums.length > 0 && (
+                            <span style={{ fontSize: 9, color: "#9ca3af" }}>| {g.datums.join(" ")}</span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Inline tolerances */}
+                {R.drawing.inline_tolerances && R.drawing.inline_tolerances.length > 0 && (
+                  <div style={{ borderTop: "1px solid #e5e3df", padding: "10px 12px" }}>
+                    <div style={{ fontSize: 8, fontWeight: 600, letterSpacing: "0.12em", color: "#9ca3af", textTransform: "uppercase", marginBottom: 6 }}>Specific Tolerances</div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                      {R.drawing.inline_tolerances.map((t, i) => (
+                        <div key={i} style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, color: "#374151", background: "#fef3c7", border: "1px solid #fde68a", borderRadius: 4, padding: "3px 7px" }}>
+                          {t.nominal} ±{t.plus}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Process notes */}
+                {R.drawing.process_notes && R.drawing.process_notes.length > 0 && (
+                  <div style={{ borderTop: "1px solid #e5e3df", padding: "10px 12px" }}>
+                    <div style={{ fontSize: 8, fontWeight: 600, letterSpacing: "0.12em", color: "#9ca3af", textTransform: "uppercase", marginBottom: 6 }}>Process Notes</div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                      {R.drawing.process_notes.map((n, i) => (
+                        <div key={i} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                          <span style={{ fontSize: 8, fontWeight: 600, color: "#6b7280", background: "#f3f4f6", padding: "1px 5px", borderRadius: 3, textTransform: "uppercase", letterSpacing: "0.06em", whiteSpace: "nowrap" }}>{n.category.replace(/_/g, " ")}</span>
+                          <span style={{ fontSize: 11, color: "#374151" }}>{n.text}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Confidence + flag */}
+                {R.drawing.flag && (
+                  <div style={{ borderTop: "1px solid #e5e3df", padding: "8px 12px", background: "#fffbeb" }}>
+                    <span style={{ fontSize: 10, color: "#92400e" }}>⚠ {R.drawing.flag}</span>
+                  </div>
+                )}
+              </div>
             </div>
           )}
 

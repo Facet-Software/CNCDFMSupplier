@@ -11,6 +11,7 @@ from sourcing.features.thin_walls import detect_thin_walls, detect_hole_proximit
 from sourcing.classify.holes import classify_through_blind, classify_hole_type
 from sourcing.analysis.setup import analyze_setups
 from sourcing.analysis.tool_access import analyze_tool_access
+from sourcing.analysis.fixturing_faces import analyze_fixturing_faces
 from sourcing.analysis.dfm import analyze_dfm
 from sourcing.analysis.feature_summary import compute_feature_counts
 from sourcing.utils.geometry import get_face_by_index, build_face_adjacency
@@ -24,6 +25,7 @@ from sourcing.reporting.summary import (
     log_dfm_summary,
     log_tool_access_summary,
     log_feature_count_summary,
+    log_fixturing_faces_summary,
 )
 from OCC.Core.Bnd import Bnd_Box
 from OCC.Core.BRepBndLib import brepbndlib
@@ -205,6 +207,11 @@ def process_step_for_basics(filepath):
 
     tool_access = analyze_tool_access(shape, setup_analysis, planar_faces, hole_profiles, fillets=fillets, face_list=face_list)
 
+    fixturing_faces = analyze_fixturing_faces(shape, setup_analysis, planar_faces,
+                                               hole_profiles, fillets=fillets,
+                                               face_list=face_list,
+                                               edge_to_faces=edge_to_faces)
+
     feature_counts = compute_feature_counts(setup_analysis, hole_profiles, fillets,
                                             planar_faces, tool_access=tool_access)
 
@@ -219,7 +226,8 @@ def process_step_for_basics(filepath):
                                edge_to_faces=edge_to_faces,
                                thin_walls=thin_walls,
                                hole_proximity_walls=hole_proximity_walls,
-                               partial_holes=partial_holes)
+                               partial_holes=partial_holes,
+                               fixturing_faces=fixturing_faces)
 
     log_hole_summary(hole_profiles, shape)
     log_planar_face_summary(planar_faces)
@@ -227,6 +235,7 @@ def process_step_for_basics(filepath):
     log_thin_wall_summary(thin_walls, hole_proximity_walls)
     log_setup_summary(setup_analysis, fillets)
     log_tool_access_summary(tool_access)
+    log_fixturing_faces_summary(fixturing_faces)
     log_feature_count_summary(feature_counts)
     log_dfm_summary(dfm_analysis)
 
@@ -244,6 +253,7 @@ def process_step_for_basics(filepath):
         "partial_holes":        partial_holes,
         "setup_analysis":       setup_analysis,
         "tool_access":          tool_access,
+        "fixturing_faces":      fixturing_faces,
         "feature_counts":       feature_counts,
         "dfm_analysis":         dfm_analysis,
         # Adjacency maps available for callers that need topological queries
@@ -254,7 +264,65 @@ def process_step_for_basics(filepath):
     }
 
 
-def to_report_dict(filepath, pipeline_result):
+def process_drawing(drawing_path, pipeline_result):
+    """
+    Parse an engineering drawing PDF and match thread callouts to STEP holes.
+
+    Mutates pipeline_result['hole_profiles'] in place — matched holes get
+    hole_type='thread' and thread_designation/pitch/class attached.
+
+    Parameters
+    ----------
+    drawing_path : str
+        Path to the drawing PDF.
+    pipeline_result : dict
+        The dict returned by process_step_for_basics(). Hole profiles
+        will be mutated if thread matches are found.
+
+    Returns
+    -------
+    dict with keys:
+        drawing   : dict — full parser output (minus raw_text)
+        matches   : list — thread match results
+    """
+    try:
+        from sourcing.drawing.parser import parse_drawing
+        from sourcing.drawing.thread_match import match_threads_to_holes
+    except ImportError as e:
+        logger.warning(f"Drawing modules not available: {e}")
+        return None
+
+    drawing_data = parse_drawing(drawing_path)
+    if drawing_data.get('source') == 'error':
+        logger.warning(f"Drawing parse error: {drawing_data.get('flag')}")
+        return {'drawing': drawing_data, 'matches': []}
+
+    # Match thread callouts to STEP hole profiles
+    thread_callouts = drawing_data.get('thread_callouts', [])
+    hole_profiles = pipeline_result['hole_profiles']
+    display_unit = pipeline_result.get('display_unit', 'mm')
+
+    matches = match_threads_to_holes(
+        thread_callouts, hole_profiles, display_unit=display_unit,
+    )
+
+    # Re-classify hole types after thread matching (hole_type was mutated)
+    for hp in hole_profiles:
+        if hp.get('hole_type') != 'thread':
+            # Don't re-classify threads — keep the mutation
+            pass
+
+    logger.info(
+        f"Drawing processed: {len(thread_callouts)} threads, "
+        f"{sum(1 for m in matches if m['matched'])} matched"
+    )
+
+    # Strip raw_text (too large for report JSON)
+    drawing_out = {k: v for k, v in drawing_data.items() if k != 'raw_text'}
+    return {'drawing': drawing_out, 'matches': matches}
+
+
+def to_report_dict(filepath, pipeline_result, drawing_data=None):
     """
     Serialize the pipeline result into a clean, UI-consumable dict.
     This is the schema the front-end report component expects.
@@ -265,6 +333,10 @@ def to_report_dict(filepath, pipeline_result):
         Original STEP file path (used for filename display).
     pipeline_result : dict
         The dict returned by process_step_for_basics().
+    drawing_data : dict or None
+        Optional output from sourcing.drawing.parser.parse_drawing().
+        If provided, drawing tolerances and process notes are included
+        in the report.
 
     Returns
     -------
@@ -315,6 +387,10 @@ def to_report_dict(filepath, pipeline_result):
     # ── fixturing feature counts lookup ──────────────────────────────────────
     fc_lookup = {fc["fixturing_idx"]: fc for fc in feature_counts}
 
+    # ── fixturing faces lookup ───────────────────────────────────────────────
+    fixturing_faces = pipeline_result.get("fixturing_faces", [])
+    ff_lookup = {ff["fixturing_idx"]: ff for ff in fixturing_faces}
+
     # ── build fixturings list ─────────────────────────────────────────────────
     fixturings_out = []
     for fix in setup["fixturings"]:
@@ -322,13 +398,71 @@ def to_report_dict(filepath, pipeline_result):
         fc   = fc_lookup.get(fi, {})
         ta   = ta_lookup.get(fi, {})
         cc   = concern_counts.get(fi, {"critical": 0, "warning": 0, "advisory": 0})
+        ff   = ff_lookup.get(fi, {})
+
+        # Serialize workholding data
+        workholding = None
+        if ff:
+            rest_faces_out = []
+            for rf in ff.get("rest_faces", [])[:3]:  # top 3 candidates only
+                rest_faces_out.append({
+                    "face_idx":      rf["face_idx"],
+                    "area":          _len(rf["area_mm2"]) if display_unit == "inch" else rf["area_mm2"],
+                    "has_features":  rf["has_features"],
+                    "score":         rf["score"],
+                })
+
+            clamp_pairs_out = []
+            for cp in ff.get("clamp_pairs", [])[:3]:  # top 3 pairs only
+                clamp_pairs_out.append({
+                    "face_idx_a":     cp["face_idx_a"],
+                    "face_idx_b":     cp["face_idx_b"],
+                    "jaw_opening":    _len(cp["jaw_opening_mm"]),
+                    "clamp_height":   _len(cp["clamp_height_mm"]),
+                    "has_features":   cp["has_features"],
+                    "notes":          cp.get("notes", []),
+                })
+
+            workholding = {
+                "class":       ff.get("workholding_class", "unknown"),
+                "rest_faces":  rest_faces_out,
+                "clamp_pairs": clamp_pairs_out,
+                "stability":   ff.get("stability", {}),
+                "warnings":    ff.get("warnings", []),
+            }
+
+        # Resolve face_idxs: face features use face_idx directly,
+        # hole features need their profile's face_idxs resolved,
+        # fillets are tracked separately (not in features list).
+        fix_face_idxs = []
+        for feat in fix.get("features", []):
+            if feat["feature_type"] == "face":
+                fix_face_idxs.append(feat["feature_idx"])
+            elif feat["feature_type"] == "hole":
+                hi = feat["feature_idx"]
+                if 0 <= hi < len(hole_profiles):
+                    fix_face_idxs.extend(hole_profiles[hi].get("face_idxs", []))
+        # Add fillet faces assigned to this fixturing
+        for flt in fillets:
+            if flt.get("fixturing_idx") == fi:
+                flt_fi = flt.get("face_idx")
+                if flt_fi is not None:
+                    fix_face_idxs.append(flt_fi)
+        # Deduplicate while preserving order
+        seen_fi = set()
+        deduped = []
+        for idx in fix_face_idxs:
+            if idx not in seen_fi:
+                seen_fi.add(idx)
+                deduped.append(idx)
+        fix_face_idxs = deduped
 
         fixturings_out.append({
             "id":              fi,
             "label":           fix_label[fi],
             "setup_type":      fix.get("setup_type", "3-axis-standard"),
             "approach_vector": list(fix.get("approach_vector", (0, 0, 1))),
-            "face_idxs":       [feat["feature_idx"] for feat in fix.get("features", [])],
+            "face_idxs":       fix_face_idxs,
             "planar":          fc.get("planar_faces", 0),
             "floor":           fc.get("floor_faces", 0),
             "wall":            fc.get("wall_faces", 0),
@@ -337,6 +471,7 @@ def to_report_dict(filepath, pipeline_result):
             "tool_changes":    fc.get("estimated_tool_changes", 0),
             "min_tool_dia":    _len(ta["min_tool_dia_mm"]) if ta.get("min_tool_dia_mm") else None,
             "concerns":        cc,
+            "workholding":     workholding,
         })
 
     # ── holes ─────────────────────────────────────────────────────────────────
@@ -362,6 +497,9 @@ def to_report_dict(filepath, pipeline_result):
             "cone_angle": cone_angle,
             "ld":         ld if (ld and ld > 2.0) else None,
             "face_idxs":  hp.get("face_idxs", []),
+            # Thread info — only present when drawing parser matched a thread
+            "thread":     hp.get("thread_designation"),
+            "thread_pitch": hp.get("thread_pitch"),
         })
 
     # ── dfm flags ─────────────────────────────────────────────────────────────
@@ -426,4 +564,101 @@ def to_report_dict(filepath, pipeline_result):
         "holes":                  holes_out,
         "dfm":                    dfm_out,
         "geometry":               pipeline_result.get("geometry", []),
+        "drawing":                _serialize_drawing(drawing_data),
+    }
+
+
+def _serialize_drawing(drawing_data):
+    """
+    Serialize drawing parser output for the report.
+
+    Produces a structured summary suitable for the UI:
+      - tightest_tolerance (value + type, comparing general/inline/GD&T)
+      - material
+      - surface_finish
+      - gdt_summary (list of type + tolerance + datums)
+      - process_notes
+      - thread_matches
+    """
+    if not drawing_data:
+        return None
+
+    d = drawing_data.get('drawing', drawing_data)
+    matches = drawing_data.get('matches', [])
+
+    # GD&T summary: just type, tolerance, datums (not raw text)
+    gdt_summary = []
+    for frame in d.get('gdt_frames', []):
+        gdt_summary.append({
+            'type':       frame.get('type', 'unknown'),
+            'tolerance':  frame.get('tolerance'),
+            'datums':     frame.get('datum_refs', []),
+        })
+
+    # --- Tightest tolerance across all sources ---
+    # Collect all tolerance values with their source type so we can
+    # report "0.001 (position)" vs "0.0005 (general 4-place)" vs "0.0001 (dimensional)"
+    candidates = []  # list of (value, type_label)
+
+    # General tolerances (numeric tiers only)
+    gen_tols = d.get('general_tolerances') or {}
+    _tier_names = {1: '1-place', 2: '2-place', 3: '3-place', 4: '4-place'}
+    for k, v in gen_tols.items():
+        if isinstance(k, int) and isinstance(v, (int, float)) and v > 0:
+            candidates.append((v, f"general {_tier_names.get(k, f'{k}-place')}"))
+
+    # Inline dimensional tolerances
+    for tol in d.get('inline_tolerances', []):
+        val = tol.get('plus') or tol.get('minus')
+        if val and val > 0:
+            candidates.append((val, "dimensional"))
+
+    # GD&T frame tolerances
+    for frame in d.get('gdt_frames', []):
+        val = frame.get('tolerance')
+        gdt_type = frame.get('type', 'unknown').replace('_', ' ')
+        if val and val > 0:
+            candidates.append((val, gdt_type))
+
+    # Find the tightest
+    tightest_val = None
+    tightest_type = None
+    if candidates:
+        best = min(candidates, key=lambda x: x[0])
+        tightest_val = best[0]
+        tightest_type = best[1]
+
+    # Process notes: category + text
+    notes = [
+        {"category": n.get("category", ""), "text": n.get("text", "")}
+        for n in d.get('process_notes', [])
+    ]
+
+    # Thread matches
+    thread_matches = [
+        {"thread": m['thread'], "hole_idx": m.get('hole_idx'),
+         "tap_drill_mm": m.get('tap_drill_mm'), "confidence": m.get('confidence')}
+        for m in matches if m.get('matched')
+    ]
+
+    surface = d.get('surface_finish', {})
+
+    return {
+        'has_drawing':         True,
+        'source':              d.get('source', 'unknown'),
+        'confidence':          d.get('confidence', 'none'),
+        'flag':                d.get('flag'),
+        'tightest_tolerance':  tightest_val,
+        'tightest_tolerance_type': tightest_type,
+        'general_tolerances':  d.get('general_tolerances'),
+        'material':            d.get('material'),
+        'surface_finish_general':    surface.get('general', []),
+        'surface_finish_individual': surface.get('individual', []),
+        'has_surface_finish':  surface.get('detected', False),
+        'datums':              d.get('datums', []),
+        'gdt':                 gdt_summary,
+        'process_notes':       notes,
+        'thread_matches':      thread_matches,
+        'inline_tolerances':   d.get('inline_tolerances', []),
+        'hole_callouts':       d.get('hole_callouts', []),
     }

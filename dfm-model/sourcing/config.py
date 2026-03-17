@@ -116,9 +116,9 @@ FILLET_EDGE_ROUND_MAX_HR_RATIO  = 3.0   # height / radius must be below this to 
 # ---------------------------------------------------------------------------
 
 # Hole L/D ratio thresholds (length-to-diameter, i.e. depth / (2*radius))
-DFM_HOLE_LD_ADVISORY  = 3.0   # deeper than 3× dia → standard tooling reaches limit
-DFM_HOLE_LD_WARNING   = 6.0   # extended tooling or pecking required
-DFM_HOLE_LD_CRITICAL  = 10.0  # gun-drilling territory, specialist process
+DFM_HOLE_LD_ADVISORY  = 4.0    # deeper than 4× dia → standard tooling reaches limit
+DFM_HOLE_LD_WARNING   = 10.0   # extended tooling or pecking required
+DFM_HOLE_LD_CRITICAL  = 20.0   # gun-drilling territory, specialist process
 
 # Small hole diameter thresholds (diameter in mm)
 DFM_HOLE_SMALL_ADVISORY_DIA_MM  = 1.5   # specialty tooling, slower feed rates
@@ -171,6 +171,53 @@ TOOL_ACCESS_OPPOSING_TOL = 0.85
 DFM_DEEP_FEATURE_FLOOR_TOL = 0.95
 
 # L/D thresholds for depth / min_tool_dia ratio
-DFM_DEEP_FEATURE_LD_ADVISORY  = 3.0
-DFM_DEEP_FEATURE_LD_WARNING   = 6.0
-DFM_DEEP_FEATURE_LD_CRITICAL  = 10.0
+DFM_DEEP_FEATURE_LD_ADVISORY  = 5.0
+DFM_DEEP_FEATURE_LD_WARNING   = 10.0
+DFM_DEEP_FEATURE_LD_CRITICAL  = 15.0
+
+
+# ---------------------------------------------------------------------------
+# FIXTURE FACE ANALYSIS CONSTANTS
+# ---------------------------------------------------------------------------
+
+# A face normal must satisfy dot(normal, -approach) >= this to be a candidate
+# rest/datum face (the face the part sits on, opposite to tool approach).
+FIXTURE_REST_FACE_DOT_MIN = 0.95
+
+# A face normal must satisfy |dot(normal, approach)| <= this to be a candidate
+# clamping face (perpendicular to approach — vise jaw contacts these).
+FIXTURE_CLAMP_FACE_PERP_MAX = 0.3
+
+# Two clamping faces are a valid vise pair if their normals satisfy
+# dot(n_A, n_B) <= this (antiparallel = opposing).
+FIXTURE_CLAMP_PAIR_ANTIPARALLEL = -0.95
+
+# Minimum face area (mm²) to be considered a viable rest face.
+# Below this, the face is too small to provide meaningful datum support.
+FIXTURE_REST_MIN_AREA_MM2 = 50.0
+
+# Minimum face area (mm²) to be considered a viable clamping face.
+FIXTURE_CLAMP_MIN_AREA_MM2 = 25.0
+
+# Minimum clamping height (mm) for a vise jaw face — the face must be tall
+# enough in the approach direction for a jaw to grip reliably.
+FIXTURE_CLAMP_MIN_HEIGHT_MM = 3.0
+
+# Stability: the rest face's bounding footprint must contain the part's
+# projected centre of gravity. This tolerance (mm) allows the CoG to sit
+# slightly outside the footprint before flagging instability.
+FIXTURE_STABILITY_COG_MARGIN_MM = 2.0
+
+# Penalty weights for fixture face scoring (higher = worse).
+# A feature (hole, pocket entry) on a rest face penalises it because the
+# part won't seat flat. On a clamping face it's less critical but still
+# means soft jaws are needed.
+FIXTURE_REST_FEATURE_PENALTY   = 0.5   # multiplied against area score
+FIXTURE_CLAMP_FEATURE_PENALTY  = 0.2
+
+# Feature coverage threshold — a face is only considered "has features"
+# for workholding purposes when the total hole cross-section area exceeds
+# this fraction of the face area. A Ø8mm hole (50mm²) in a 5000mm² face
+# is 1% coverage — perfectly fine for vise seating. The same hole in a
+# 200mm² face is 25% — soft jaws needed.
+FIXTURE_FEATURE_COVERAGE_THRESHOLD = 0.15  # 15% of face area

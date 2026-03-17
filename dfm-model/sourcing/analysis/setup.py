@@ -147,6 +147,11 @@ def analyze_setups(shape, planar_faces, hole_profiles, pockets, fillets=None,
     # Deduplicate through-hole assignments across fixturings.
     _deduplicate_through_holes(fixturings, hole_profiles)
 
+    # Pocket containment: reassign ambiguous faces (walls, blends) to the
+    # correct fixture based on topological connectivity to confident floor
+    # faces. This replaces ray casting with a robust adjacency-based approach.
+    _reassign_by_adjacency(fixturings, edge_to_faces)
+
     # Remove fixturings that ended up with no features after deduplication.
     fixturings = [f for f in fixturings if f['feature_count'] > 0]
     for i, f in enumerate(fixturings):
@@ -1551,6 +1556,179 @@ def _deduplicate_through_holes(fixturings, hole_profiles):
             if feat['concern_level']:
                 concern_count[feat['concern_level']] += 1
         f['concern_count'] = concern_count
+
+
+def _reassign_by_adjacency(fixturings, edge_to_faces):
+    """
+    Reassign ambiguous faces (walls, blends) to the correct fixture using
+    topological connectivity rather than ray casting.
+
+    Principle: a pocket wall shares edges with the pocket floor. The floor
+    is confidently assigned (its normal aligns with the approach direction).
+    All faces in the pocket inherit the floor's fixture assignment.
+
+    This handles all face types uniformly — planar, curved, freeform —
+    because adjacency doesn't depend on surface geometry.
+
+    Algorithm:
+      1. Classify each assigned face as "confident" (floor/ceiling, |dot| ≥ 0.7
+         with approach) or "ambiguous" (wall/blend, |dot| < 0.7).
+      2. Build a face-to-face adjacency graph from edge_to_faces.
+      3. For each ambiguous face, BFS through other ambiguous faces until
+         reaching a confident face. If that confident face is in a different
+         fixture, the ambiguous face is a pocket interior that was assigned
+         to the wrong fixture — move it.
+      4. If an ambiguous face connects to confident faces in multiple
+         fixtures, it's an exterior wall shared between setups — keep
+         the current assignment (set-cover was correct).
+
+    Mutates fixturings in place.
+    """
+    if not edge_to_faces or len(fixturings) < 2:
+        return
+
+    # Build face-to-face adjacency
+    face_neighbors = {}  # face_idx → set of adjacent face_idxs
+    for edge_faces in edge_to_faces.values():
+        for fi in edge_faces:
+            if fi not in face_neighbors:
+                face_neighbors[fi] = set()
+            for fj in edge_faces:
+                if fj != fi:
+                    face_neighbors[fi].add(fj)
+
+    # Map face_idx → (fixture_idx, feature_dict, is_confident)
+    FLOOR_DOT = 0.7
+    face_info = {}  # face_idx → {fix_idx, feat, confident}
+
+    for fix in fixturings:
+        ap = fix['approach_vector']
+        ap_mag = (ap[0]**2 + ap[1]**2 + ap[2]**2) ** 0.5
+        if ap_mag < 1e-9:
+            continue
+
+        for feat in fix['features']:
+            if feat['feature_type'] != 'face':
+                continue
+            fi = feat['feature_idx']
+            fn = feat['constraint_direction']
+            dot = abs(fn[0]*ap[0] + fn[1]*ap[1] + fn[2]*ap[2]) / max(ap_mag, 1e-9)
+            face_info[fi] = {
+                'fix_idx': fix['fixturing_idx'],
+                'feat': feat,
+                'confident': dot >= FLOOR_DOT,
+            }
+
+    # For each ambiguous face, BFS to find which confident faces it connects to
+    from collections import deque
+
+    moves = []  # list of (face_idx, from_fix_idx, to_fix_idx)
+
+    for fi, info in face_info.items():
+        if info['confident']:
+            continue  # already confidently assigned
+
+        # BFS from this ambiguous face through other ambiguous faces
+        # until we reach confident faces (anchor points)
+        visited = {fi}
+        queue = deque(face_info.get(n, {}).get('fix_idx') is not None and n
+                      for n in face_neighbors.get(fi, set()))
+
+        # Restart BFS properly
+        visited = {fi}
+        queue = deque()
+        for n in face_neighbors.get(fi, set()):
+            if n not in visited:
+                queue.append(n)
+                visited.add(n)
+
+        anchor_fixtures = set()  # fixture indices of confident faces we reach
+
+        while queue:
+            current = queue.popleft()
+            curr_info = face_info.get(current)
+
+            if curr_info is not None and curr_info['confident']:
+                # Reached a confident face — record its fixture
+                anchor_fixtures.add(curr_info['fix_idx'])
+                continue  # don't traverse through confident faces
+
+            # Not a confident assigned face — might be unassigned (hole wall,
+            # chamfer) or another ambiguous face. Continue BFS.
+            for n in face_neighbors.get(current, set()):
+                if n not in visited:
+                    visited.add(n)
+                    queue.append(n)
+
+        # Decision: should this face move?
+        if len(anchor_fixtures) == 1:
+            target_fix = next(iter(anchor_fixtures))
+            if target_fix != info['fix_idx']:
+                # All connected confident faces are in a different fixture
+                # → this is a pocket interior assigned to the wrong fixture
+                moves.append((fi, info['fix_idx'], target_fix))
+        # If anchor_fixtures is empty or has multiple fixtures:
+        # - Empty: isolated face, keep current assignment
+        # - Multiple: exterior face shared between setups, keep current
+
+    if not moves:
+        return
+
+    # Execute moves
+    fix_by_idx = {f['fixturing_idx']: f for f in fixturings}
+
+    for fi, from_idx, to_idx in moves:
+        src = fix_by_idx[from_idx]
+        dst = fix_by_idx[to_idx]
+
+        # Find and remove from source
+        feat = None
+        new_features = []
+        for f in src['features']:
+            if f['feature_type'] == 'face' and f['feature_idx'] == fi:
+                feat = f
+            else:
+                new_features.append(f)
+        src['features'] = new_features
+        src['feature_count'] = len(new_features)
+
+        if feat is None:
+            continue
+
+        # Recompute concern for target fixture
+        tap = dst['approach_vector']
+        tap_mag = (tap[0]**2 + tap[1]**2 + tap[2]**2) ** 0.5
+        fn = feat['constraint_direction']
+        dot = abs(fn[0]*tap[0] + fn[1]*tap[1] + fn[2]*tap[2]) / max(tap_mag, 1e-9)
+        dev = math.degrees(math.acos(min(max(dot, -1.0), 1.0)))
+        level, reason = _concern('face', fi, dev)
+
+        new_feat = {
+            'feature_type':          'face',
+            'feature_idx':           fi,
+            'constraint_direction':  fn,
+            'angular_deviation_deg': round(dev, 2),
+            'concern_level':         level,
+            'concern_reason':        reason,
+        }
+        dst['features'].append(new_feat)
+        dst['feature_count'] = len(dst['features'])
+
+        logger.debug(
+            f"    Face {fi}: moved from fixture {from_idx} -> {to_idx} "
+            f"(adjacency to confident floor)"
+        )
+
+    # Recompute concern counts
+    logger.info(f"  Adjacency check: {len(moves)} faces reassigned to correct pocket fixture")
+    for f in fixturings:
+        cc = {"advisory": 0, "warning": 0, "critical": 0}
+        for ft in f['features']:
+            if ft['concern_level']:
+                cc[ft['concern_level']] += 1
+        f['concern_count'] = cc
+
+
 
 
 # ---------------------------------------------------------------------------

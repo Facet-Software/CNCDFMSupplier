@@ -271,3 +271,41 @@ def log_feature_count_summary(feature_counts):
             + (f"  (min tool dia: {fix['min_tool_dia_mm']:.2f} mm)"
                if fix['min_tool_dia_mm'] else "")
         )
+
+
+def log_fixturing_faces_summary(fixturing_faces):
+    logger.info("--- Fixturing Faces Summary ---")
+    if not fixturing_faces:
+        logger.info("  No fixturing face analysis available.")
+        return
+    for ff in fixturing_faces:
+        axis = ff.get('approach_axis') or 'special'
+        label = f"Fixturing {ff['fixturing_idx']} ({axis})"
+        wh = ff.get('workholding_class', 'unknown')
+        rest = ff.get('rest_faces', [])
+        pairs = ff.get('clamp_pairs', [])
+        warnings = ff.get('warnings', [])
+
+        logger.info(f"  {label}  workholding={wh}")
+        if rest:
+            best = rest[0]
+            feat_str = " (has features)" if best['has_features'] else ""
+            logger.info(
+                f"    Best rest face: face {best['face_idx']}, "
+                f"area={best['area_mm2']:.0f} mm²{feat_str}"
+            )
+        else:
+            logger.info(f"    No viable rest face")
+
+        if pairs:
+            best = pairs[0]
+            logger.info(
+                f"    Best clamp pair: faces [{best['face_idx_a']}, {best['face_idx_b']}], "
+                f"jaw opening={best['jaw_opening_mm']:.1f} mm, "
+                f"height={best['clamp_height_mm']:.1f} mm"
+            )
+        else:
+            logger.info(f"    No viable clamp pair")
+
+        for w in warnings:
+            logger.info(f"    WARN: {w}")
