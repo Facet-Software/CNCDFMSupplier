@@ -1,0 +1,9 @@
+node_modules
+.next
+uploads
+.git
+__pycache__
+*.pyc
+.DS_Store
+__MACOSX
+dfm-model/Sample_Parts
