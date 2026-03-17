@@ -32,7 +32,7 @@ RUN npm ci
 
 COPY . .
 
-RUN npm run build
+RUN DATABASE_URL="file:./placeholder.db" npm run build
 
 RUN mkdir -p /app/uploads
 
