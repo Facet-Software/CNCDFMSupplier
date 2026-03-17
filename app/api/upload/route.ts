@@ -53,15 +53,17 @@ async function saveUpload(file: File, subdir = "uploads") {
 
 // ── Spawn model (fire-and-forget) ──
 
-function runDfmModel(stepPath: string, jobId: string, stepStored: string) {
+function runDfmModel(stepPath: string, jobId: string, stepStored: string, drawingPath?: string) {
   const modelDir = path.join(process.cwd(), "dfm-model");
   const runScript = path.join(modelDir, "run.py");
   const uploadsDir = path.join(process.cwd(), "uploads");
 
   const stem = path.basename(stepStored, path.extname(stepStored));
   const reportFilename = `${stem}_report.html`;
-
-  const py = spawn(PYTHON_PATH, [runScript, stepPath], { cwd: modelDir });
+  
+  const args = [runScript, stepPath];
+  if (drawingPath) args.push(drawingPath);
+  const py = spawn(PYTHON_PATH, args, { cwd: modelDir });
 
   let stdout = "";
   let stderr = "";
@@ -160,7 +162,7 @@ export async function POST(req: Request) {
     });
 
     // Spawn model (returns immediately, Python runs in background)
-    runDfmModel(savedStep.storedPath, job.id, savedStep.stored);
+    runDfmModel(savedStep.storedPath, job.id, savedStep.stored, savedDrawing?.storedPath);
 
     // Email notification (fire-and-forget)
     resend.emails

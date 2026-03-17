@@ -1,262 +1,238 @@
 # Facet
 
-DFM analysis tool for CNC machine shops. Upload a STEP file (+ optional drawing PDF), get an instant manufacturability report — setups, holes, thin walls, tool access, DFM flags. Cuts quoting prep time from hours to minutes.
+DFM analysis tool for CNC machine shops. Upload a STEP file (+ optional engineering drawing PDF), get an instant manufacturability report — setups, holes, thin walls, tool access, tolerances, thread detection, DFM flags.
 
-Supplier-side only. No accounts. No marketplace.
+**Live at [facetquote.com](https://facetquote.com)**
 
 ---
 
 ## Architecture
 
-Everything runs on the same machine. The Next.js app spawns the DFM model (Python) directly — no separate service, no HTTP between them.
+Everything runs on one Railway server. Next.js handles the frontend and API routes. The upload route spawns JR's Python model directly via conda. No microservices, no split deployment.
 
 ```
 app/
-├── page.tsx                    # Landing page (supplier-focused + upload form)
-├── layout.tsx                  # Root layout + metadata
-├── globals.css                 # Global styles
+├── page.tsx                          # Landing page (upload form)
+├── layout.tsx
+├── globals.css
 ├── api/
-│   └── upload/
-│       └── route.ts            # Handles STEP + optional PDF + email, stores files,
-│                               #   spawns DFM model + drawing parser, returns jobId
+│   ├── upload/
+│   │   └── route.ts                  # Saves files, creates DB row, spawns model
+│   ├── files/
+│   │   └── [name]/
+│   │       └── route.ts              # Serves HTML reports + uploaded files
+│   └── jobs/
+│       └── [jobID]/
+│           └── route.ts              # Polling endpoint (frontend checks every 2s)
 ├── lib/
-│   └── prisma.ts               # Prisma client (Turso/LibSQL)
+│   └── prisma.ts                     # Prisma client (Turso/LibSQL adapter)
 │
-dfm-model/                       # DFM analysis engine (Python, OpenCASCADE)
-│   ├── run.py                   # Entry point — spawned by upload route with STEP path
-│   └── sourcing/                # Full pipeline (see DFM Engine section below)
-│
-scripts/
-│   └── parse_drawing.py         # Tolerance parser for engineering drawing PDFs
+dfm-model/                            # Python DFM engine (OpenCASCADE)
+│   ├── run.py                        # Entry point: python run.py file.step [drawing.pdf]
+│   ├── sourcing/
+│   │   ├── pipeline.py               # Main pipeline + drawing processing
+│   │   ├── loader.py                 # STEP file loader
+│   │   ├── config.py
+│   │   ├── analysis/                 # Setup, DFM flags, tool access, feature summary
+│   │   ├── classify/                 # Hole classification
+│   │   ├── features/                 # Planar, cylindrical, thin walls, pockets
+│   │   ├── reporting/                # HTML report + summary generation
+│   │   └── utils/                    # Geometry helpers
+│   └── parse_drawing.py              # PDF tolerance + thread parser
 │
 prisma/
-│   └── schema.prisma            # Database schema
+│   └── schema.prisma
 │
-uploads/                         # UUID-named files saved here (gitignored)
+uploads/                              # UUID-named files + HTML reports (gitignored)
+Dockerfile                            # Railway deployment (Node + conda + pythonocc-core)
 ```
-
-Results page architecture TBD — will be designed separately once upload flow is live.
 
 ---
 
 ## User Flow
 
 ```
-1. Shop owner lands on facetquote.com
-   └── Sees: value prop + upload zone above the fold
+1. Shop owner uploads STEP + email (optional: drawing PDF) at facetquote.com
 
-2. Uploads STEP file (required) + drawing PDF (optional) + enters email (required)
-   └── Phone number: optional, shown but not blocking
+2. POST /api/upload
+   ├── Saves STEP + PDF to /uploads with UUID names
+   ├── Creates UploadJob row in Turso (status: "received")
+   ├── Spawns: python dfm-model/run.py /uploads/uuid.step [/uploads/uuid.pdf]
+   └── Returns { jobId } immediately
 
-3. Hits "Analyze"
-   └── POST /api/upload
-       ├── Validates files (STEP required, .step/.stp only)
-       ├── Saves files to /uploads with UUID names
-       ├── Creates UploadJob row in DB (status: "received")
-       ├── Spawns dfm-model/run.py with STEP file path (fire-and-forget)
-       ├── Spawns parse_drawing.py with PDF path if provided (fire-and-forget)
-       ├── Sends notification email to founder (via Resend)
-       └── Returns { jobId }
+3. Frontend shows "Analyzing your part..." spinner
+   └── Polls GET /api/jobs/[jobID] every 2 seconds
 
-4. Client shows confirmation state
-   └── "Your part is being analyzed. We'll follow up at [email]."
-   └── Results page TBD
+4. Python finishes in background:
+   ├── Prints JSON report to stdout → route.ts captures it
+   ├── Writes HTML report to dfm-model/ → route.ts moves to uploads/
+   ├── Stores JSON in Turso dfmResultJson column
+   └── Updates status → "complete"
 
-5. Background: run.py completes → updates UploadJob status to "complete"
-   Background: parse_drawing.py completes → stores JSON in drawingParseJson
+5. Poll returns { status: "complete", reportUrl } → browser redirects to HTML report
+
+6. GET /api/files/uuid_report.html serves JR's interactive report
+   └── 3D viewer, setup summary, hole inventory, DFM flags, PDF export
 ```
 
 ---
 
-## Landing Page Structure (page.tsx)
+## DFM Engine
 
-**Above the fold:**
+Full geometric analysis from a STEP file. Python + OpenCASCADE (pythonocc-core).
+
 ```
-┌──────────────────────────────────────────────┐
-│ NAV: Facet (left) ──── [Analyze a part] (right)│
-├──────────────────────────────────────────────┤
-│                                              │
-│  HEADLINE:                                   │
-│  "Upload a STEP file. Extract design intent, │
-│   technical requirements, and DFM cost       │
-│   drivers — in seconds."                     │
-│                                              │
-│  SUBHEAD:                                    │
-│  Stop spending hours reviewing models and    │
-│  drawings before you can quote. Facet pulls  │
-│  the key requirements and flags major cost   │
-│  drivers — so you spend time making parts,   │
-│  not translating documents.                  │
-│                                              │
-│  3-axis vs 5-axis · Hole inventory + L/D ·   │
-│  Thin walls · Min tool dia · DFM flags ·     │
-│  Material removal %                          │
-│                                              │
-│  ┌──────────────────────────────────────┐    │
-│  │  [ STEP file dropzone ] (required)   │    │
-│  │  [ Drawing PDF dropzone ] (optional) │    │
-│  │  [ Email ] [ Phone (optional) ]      │    │
-│  │          [ Analyze part ]            │    │
-│  └──────────────────────────────────────┘    │
-│  🔒 Files stored under unique ID. Never shared│
-│                                              │
-└──────────────────────────────────────────────┘
+conda activate dfm
+python run.py /path/to/file.step [/path/to/drawing.pdf]
 ```
 
-**Below the fold:**
-- What You Get (6-card grid: setups, holes, thin walls, volume, tooling, DFM flags)
-- How It Works (3 steps)
-- Your Files. Your Control. (trust section + CTA)
+**Capabilities:**
+
+- Machine classification (3-axis standard vs 5-axis indexed)
+- Setup / fixturing count with per-setup breakdown
+- Hole inventory (through, blind, counterbore, countersink) with L/D ratios
+- Small hole detection (below 1.5mm and 0.8mm thresholds)
+- Deep hole detection (L/D flags at 3:1, 6:1, 10:1)
+- Volume removal percentage (bounding box vs solid)
+- Thin wall detection (geometry-based + hole proximity)
+- Deep pocket flagging
+- Minimum tool diameter per fixturing
+- Fillet analysis (concave/convex, radius thresholds)
+- Estimated tool changes per fixturing
+- DFM flags (critical / warning / advisory)
+- Bounding box dimensions
+- Tool access / wall gap analysis
+
+**Drawing Parser (optional PDF input):**
+
+- Tolerance extraction from engineering drawing PDFs
+- Thread detection and matching to holes in the STEP model
+- GD&T parsing
+- Confidence scoring
 
 ---
 
-## DFM Engine (dfm-model/)
+## Database
 
-Full geometric analysis from a STEP file. Python + OpenCASCADE. Runs locally — spawned by the upload route with the saved STEP file path.
-
-```
-python3 dfm-model/run.py /path/to/saved/file.step
-```
-
-| Capability | Detail |
-|-----------|--------|
-| **Machine classification** | 3-axis standard vs 5-axis indexed |
-| **Setup / fixturing count** | How many times the part needs to be re-fixtured |
-| **Per-setup breakdown** | Approach axis, features per fixturing, concern counts |
-| **Hole inventory** | Through, blind, counterbore, countersink — with diameter, depth, L/D ratio |
-| **Small hole detection** | Flags holes below 1.5mm and 0.8mm diameter thresholds |
-| **Deep hole detection** | L/D ratio flags at 3:1, 6:1, 10:1 (gun-drilling territory) |
-| **Volume removal** | Bounding box volume vs solid volume = material removal percentage |
-| **Thin wall detection** | Geometry-based + hole proximity walls, severity rated |
-| **Deep pockets** | Depth-to-tool-diameter ratio flagging |
-| **Minimum tool diameter** | Per fixturing, based on gap constraints between faces |
-| **Fillet analysis** | Concave/convex, radius thresholds, special tooling flags for small radii |
-| **Estimated tool changes** | Per fixturing based on distinct hole diameters + fillet tools |
-| **DFM flags** | Critical / warning / advisory with specific actionable messages |
-| **Bounding box dimensions** | X × Y × Z in mm |
-| **Conical chamfer detection** | External chamfers with angle + radii |
-| **Tool access analysis** | Wall gap constraints that limit cutter diameter |
-
-Drawing parser (`scripts/parse_drawing.py`) extracts general tolerance blocks, inline tolerances, and GD&T symbols from engineering drawing PDFs.
-
----
-
-## Database Schema
+Turso (LibSQL). One table:
 
 ```prisma
 model UploadJob {
   id                String   @id @default(uuid())
   createdAt         DateTime @default(now())
-  status            String   @default("received")  // received | processing | complete | error
+  status            String   @default("received")
 
-  // Contact
   email             String
   phone             String?
 
-  // Files
   stepOriginal      String
   stepStored        String
   drawingOriginal   String?
   drawingStored     String?
 
-  // DFM results (JSON blob when model returns)
   dfmResultJson     String?
-
-  // Drawing parse results
   drawingParseJson  String?
 }
 ```
 
-After changing schema: `npx prisma generate && npx prisma db push`
+Manage via: `turso db shell facet`
 
 ---
 
-## API
+## Deployment
 
-### POST /api/upload
+Everything runs on Railway ($5/mo Hobby plan). Docker container with Node 20 + conda + pythonocc-core.
+
+**Dockerfile handles:**
+- System deps (libgl, libglib for OpenCASCADE)
+- Miniconda install + TOS acceptance
+- conda env `dfm` with python 3.11 + pythonocc-core + pdfplumber
+- Node deps + Next.js build
+- Starts with `npm start`
+
+**Railway env vars:**
 ```
-Request: multipart/form-data
-  - step: File (required, .step or .stp)
-  - drawing: File (optional, .pdf)
-  - email: string (required)
-  - phone: string (optional)
-
-Response: { jobId: string }
-
-Side effects:
-  1. Save files to /uploads/<uuid>.step, /uploads/<uuid>.pdf
-  2. Create UploadJob row
-  3. Spawn dfm-model/run.py with STEP path (fire-and-forget, updates status on completion)
-  4. Spawn parse_drawing.py with PDF path if provided (fire-and-forget, stores result in DB)
-  5. Send notification email via Resend
+DATABASE_URL=libsql://facet-sunjayshanker.aws-us-east-1.turso.io?authToken=xxx
+RESEND_API_KEY=re_xxx
+PYTHON_PATH=/opt/conda/envs/dfm/bin/python
 ```
 
-Results-related endpoints will be designed with the results page.
+**Domain:** facetquote.com → Railway via CNAME in Namecheap
+
+**Auto-deploy:** Push to `main` on GitHub → Railway rebuilds and deploys automatically.
 
 ---
 
-## Local Dev Setup
+## Local Development
 
 ```bash
-# Install dependencies
-npm install
-
-# Set up database
-npx prisma generate
-npx prisma db push
-
-# Make sure Python dependencies are installed for DFM model
-pip install -r dfm-model/requirements.txt
-pip install pdfplumber  # for parse_drawing.py
-
-# Run dev server
+# Start dev server
 npm run dev
+
+# Test model directly
+conda activate dfm
+cd dfm-model
+python run.py ../uploads/any-file.step
+
+# Test model with drawing
+python run.py ../uploads/any-file.step ../uploads/any-drawing.pdf
+
+# Check database
+turso db shell facet
+SELECT * FROM UploadJob ORDER BY createdAt DESC LIMIT 5;
 ```
 
-Requires Python 3 with OpenCASCADE (pythonocc-core) installed for the DFM model.
+**Local conda Python path (Mac):**
+```
+/usr/local/Caskroom/miniconda/base/envs/dfm/bin/python
+```
+
+**Server conda Python path (Railway Docker):**
+```
+/opt/conda/envs/dfm/bin/python
+```
 
 ---
 
-## Implementation Phases
+## .gitignore
 
-### Phase 1: Landing Page + Upload Flow
-1. Update Prisma schema
-2. Build POST /api/upload route
-3. Build landing page with upload form + confirmation state on submit
-4. Deploy
-
-### Phase 2: Results Page (TBD)
-- Architecture and design to be decided separately
-- Will consume DFM model output (dfmResultJson stored in DB)
-
-### Phase 3: Polish
-1. Refine landing page design
-2. Email notification when report is ready
-3. Loading states and error handling
-
-### Phase 4: Learn
-1. Every upload → personal outreach within 24 hours
-2. Track: upload started vs completed (drop-off = friction signal)
-3. Ask: "Was this useful? What's missing?"
+```
+.env
+.env.local
+uploads/
+node_modules/
+__pycache__/
+*.pyc
+.DS_Store
+__MACOSX/
+dfm-model/Sample_Parts/
+```
 
 ---
 
-## Environment Variables
-```
-DATABASE_URL=         # Turso/LibSQL connection string
-RESEND_API_KEY=       # Email notifications
-```
+## Security
 
-That's it. No external model URL needed — DFM model runs locally via spawn.
+**Already handled:**
+- SQL injection — Prisma parameterizes all queries
+- XSS — React escapes output
+- HTTPS — Railway provides this automatically
+- File names — all uploads renamed to UUIDs
+- File size limit — 50MB cap in upload route
+
+**Add when you have real users:**
+- Rate limiting on upload route
+- Per-upload access control on /api/files/[name]
+- Email verification
+- Upload cleanup (cron to delete old files)
 
 ---
 
 ## Design Decisions
 
 - **No auth / no accounts.** Upload and go.
-- **DFM model runs locally.** Spawned as a subprocess, not a separate service. Simplest thing that works.
+- **One server.** Next.js + Python on the same Railway box. Simplest possible deployment.
+- **Spawn, not HTTP.** Route.ts spawns python directly. No model server, no fetch between services.
+- **Entire report stored as one JSON blob.** No schema changes when model adds capabilities.
 - **Email required with upload.** How we close the feedback loop.
-- **Phone optional.** Low friction.
-- **Drawing optional.** STEP is enough to generate value. Drawing adds tolerance context.
-- **Results page designed separately.** Ship the upload flow first.
-- **One landing page.** facetquote.com = value prop + upload. That's it.
+- **Drawing optional.** STEP alone generates full value. Drawing adds tolerances + thread matching.
+- **One landing page.** facetquote.com = value prop + upload form. That's it.
