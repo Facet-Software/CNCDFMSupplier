@@ -12,9 +12,9 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
-export const metadata: Metadata = {
-  title: "Facet — CNC Manufacturing Marketplace",
-  description: "Connect with verified CNC machine shops. Upload your STEP file, get competitive quotes, understand your pricing. Built for designers and engineers.",
+export const metadata = {
+  title: "Facet — DFM Analysis for CNC Shops",
+  description: "Upload a STEP file. Get setups, holes, thin walls, tooling, and DFM flags in seconds.",
 };
 
 export default function RootLayout({

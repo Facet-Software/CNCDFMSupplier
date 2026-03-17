@@ -185,7 +185,7 @@ export default function HomePage() {
 
         .hero { padding: 80px 32px 0; text-align: center; max-width: 720px; margin: 0 auto; }
 
-        .hero-h1 { font-size: clamp(22px, 2.8vw, 28px); font-weight: 600; line-height: 1.35; letter-spacing: -0.02em; color: var(--text); margin-bottom: 10px; }
+        .hero-h1 { font-size: clamp(22px, 2.8vw, 28px); font-weight: 600; line-height: 1.35; letter-spacing: -0.02em; color: var(--text); margin-bottom: 32px; }
 
         .hero-sub { font-size: 14px; color: var(--text-secondary); line-height: 1.5; max-width: 540px; margin: 0 auto; }
 
@@ -298,11 +298,6 @@ export default function HomePage() {
             Upload a STEP file.<br />
             Extract design intent, technical requirements, and DFM cost drivers — in seconds.
           </h1>
-          <p className="hero-sub">
-            Stop spending hours reviewing models and drawings before you can quote.
-            Facet pulls the key requirements and flags major cost drivers — so you
-            spend time making parts, not translating documents.
-          </p>
         </section>
 
         <div className="upload-wrapper" ref={uploadRef}>
