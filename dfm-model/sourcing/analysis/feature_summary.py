@@ -63,11 +63,6 @@ def compute_feature_counts(setup_analysis, hole_profiles, fillets,
         return []
 
     # Build lookup maps
-    hole_by_face_idx = {}   # face_idx → hole_profile
-    for hp in hole_profiles:
-        for fi in hp.get('face_idxs', []):
-            hole_by_face_idx[fi] = hp
-
     planar_by_idx = {pf['face_idx']: pf for pf in planar_faces}
 
     tool_by_fix = {}
@@ -119,16 +114,18 @@ def compute_feature_counts(setup_analysis, hole_profiles, fillets,
                 n_wall += 1
 
         # --- Hole counts ---
-        seen_holes = set()   # hole profiles are multi-face; deduplicate by id
+        # assigned_hole_idxs contains hole PROFILE indices (not face indices).
+        # Look up directly in hole_profiles list.
+        seen_holes = set()   # deduplicate by profile index
         hole_types   = {}
         hole_dias    = []
         hole_depths  = []
 
-        for fi in assigned_hole_idxs:
-            hp = hole_by_face_idx.get(fi)
-            if hp is None or id(hp) in seen_holes:
+        for hi in assigned_hole_idxs:
+            if hi in seen_holes or hi < 0 or hi >= len(hole_profiles):
                 continue
-            seen_holes.add(id(hp))
+            seen_holes.add(hi)
+            hp = hole_profiles[hi]
 
             htype = hp.get('hole_type', 'unknown')
             hole_types[htype] = hole_types.get(htype, 0) + 1

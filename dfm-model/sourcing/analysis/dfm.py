@@ -722,6 +722,99 @@ def _check_thin_walls(thin_walls: list, hole_proximity_walls: list) -> list:
     return flags
 
 
+# ---------------------------------------------------------------------------
+# I. Workholding / fixturing concerns
+# ---------------------------------------------------------------------------
+
+def _check_workholding(fixturing_faces: list) -> list:
+    """
+    Flag workholding concerns from the fixturing face analysis.
+
+    These are cost and risk drivers that affect quoting:
+      - No viable datum face → custom fixture required (expensive)
+      - Features on datum face → shimming or nest required
+      - No opposing clamp pair → toe clamps, extra setup time
+      - Centre of gravity outside rest footprint → tipping risk
+      - Soft jaws required → fixture cost adder
+    """
+    if not fixturing_faces:
+        return []
+
+    flags = []
+    for ff in fixturing_faces:
+        fix_idx = ff['fixturing_idx']
+        axis    = ff.get('approach_axis') or f'fixturing {fix_idx}'
+
+        rest     = ff.get('rest_faces', [])
+        pairs    = ff.get('clamp_pairs', [])
+        wh_class = ff.get('workholding_class', 'unknown')
+        stab     = ff.get('stability', {})
+
+        # No rest face at all — critical
+        if not rest:
+            flags.append(_flag(
+                'critical', 'no_datum_face',
+                f"Fixturing {axis}: no viable datum/rest face found — "
+                f"custom fixture or nest required",
+                fixturing_idx=fix_idx,
+            ))
+            continue
+
+        best_rest = rest[0]
+
+        # Features on best rest face — warning
+        if best_rest.get('has_features'):
+            flags.append(_flag(
+                'warning', 'datum_face_features',
+                f"Fixturing {axis}: best datum face (face {best_rest['face_idx']}, "
+                f"{best_rest['area_mm2']:.0f} mm²) has machined features — "
+                f"part won't seat flat without shimming or custom nest",
+                fixturing_idx=fix_idx,
+                face_idxs=[best_rest['face_idx']],
+            ))
+
+        # CoG instability — warning
+        if stab.get('cog_inside_footprint') is False:
+            flags.append(_flag(
+                'warning', 'cog_instability',
+                f"Fixturing {axis}: part centre of gravity projects outside "
+                f"datum face footprint (offset "
+                f"{stab.get('offset_from_center_mm', '?')} mm) — "
+                f"part will tend to tip, toe clamps required",
+                fixturing_idx=fix_idx,
+                face_idxs=[best_rest['face_idx']],
+            ))
+
+        # No clamping pair — advisory (toe clamps work, just slower)
+        if not pairs:
+            flags.append(_flag(
+                'advisory', 'no_clamp_pair',
+                f"Fixturing {axis}: no opposing face pair for vise — "
+                f"toe clamps or strap clamps needed (adds setup time)",
+                fixturing_idx=fix_idx,
+            ))
+        elif pairs[0].get('has_features'):
+            flags.append(_flag(
+                'advisory', 'clamp_face_features',
+                f"Fixturing {axis}: best clamp pair "
+                f"(faces {pairs[0]['face_idx_a']}, {pairs[0]['face_idx_b']}) "
+                f"has features — soft jaws recommended",
+                fixturing_idx=fix_idx,
+                face_idxs=[pairs[0]['face_idx_a'], pairs[0]['face_idx_b']],
+            ))
+
+        # Overall soft jaw / custom classification — advisory for cost impact
+        if wh_class == 'custom':
+            flags.append(_flag(
+                'advisory', 'custom_fixture',
+                f"Fixturing {axis}: custom fixture required — "
+                f"significant setup cost adder for quoting",
+                fixturing_idx=fix_idx,
+            ))
+
+    return flags
+
+
 def analyze_dfm(hole_profiles: list, fillets: list,
                 tool_access: list = None, setup_analysis: dict = None,
                 planar_faces: list = None, bbox_extents: tuple = None,
@@ -729,7 +822,8 @@ def analyze_dfm(hole_profiles: list, fillets: list,
                 face_to_edges: dict = None, edge_to_faces: dict = None,
                 thin_walls: list = None,
                 hole_proximity_walls: list = None,
-                partial_holes: list = None) -> dict:
+                partial_holes: list = None,
+                fixturing_faces: list = None) -> dict:
     """
     Run all DFM checks and return a structured result.
 
@@ -752,6 +846,7 @@ def analyze_dfm(hole_profiles: list, fillets: list,
                                       bbox_extents=bbox_extents))
     flags.extend(_check_thin_walls(thin_walls or [], hole_proximity_walls or []))
     flags.extend(_check_partial_holes(partial_holes or []))
+    flags.extend(_check_workholding(fixturing_faces or []))
 
     # Sort: critical first, then warning, then advisory
     _order = {'critical': 0, 'warning': 1, 'advisory': 2}
