@@ -1,5 +1,3 @@
-cd ~/cnc-mvp
-cat > Dockerfile << 'EOF'
 FROM node:20-slim
 
 WORKDIR /app
@@ -41,5 +39,4 @@ ENV PORT=3000
 ENV HOSTNAME="0.0.0.0"
 
 CMD ["npm", "start"]
-EOF
 
