@@ -32,7 +32,7 @@ RUN npm ci
 
 COPY . .
 
-RUN DATABASE_URL="file:./placeholder.db" npm run build
+RUN DATABASE_URL="file:./placeholder.db" RESEND_API_KEY="re_placeholder" npm run build
 
 RUN mkdir -p /app/uploads
 
