@@ -1,6 +1,6 @@
 import { prisma } from "@/app/lib/prisma";
 import { randomUUID } from "crypto";
-import { writeFile, mkdir, rename, readdir } from "fs/promises";
+import { writeFile, mkdir, rename } from "fs/promises";
 import path from "path";
 import { spawn } from "child_process";
 import { Resend } from "resend";
@@ -8,23 +8,22 @@ import { Resend } from "resend";
 // ────────────────────────────────────────────────────────────────
 // POST /api/upload
 //
-// 1. Browser sends STEP + optional PDF + email + phone
-// 2. Validate, save files to /uploads with UUID names
-// 3. Create DB row
-// 4. Spawn JR's Python model (fire-and-forget)
-//    - Model writes HTML report in dfm-model/ directory
-//    - When done, we move the HTML to /uploads so we can serve it
-// 5. Email founder
-// 6. Return jobId immediately
+// Everything runs on the same server:
+// 1. Save STEP file to /uploads
+// 2. Create DB row in Turso (status: "received")
+// 3. Spawn JR's Python model (fire-and-forget)
+// 4. Return jobId immediately — don't wait for Python
+// 5. Frontend polls /api/jobs/[jobId] until complete
+// 6. When Python finishes → stores JSON + moves HTML to uploads
 // ────────────────────────────────────────────────────────────────
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 
-// ── Use conda Python where OpenCASCADE is installed ──
-// Got this path from: conda activate dfm && which python
-const PYTHON_PATH = "/usr/local/Caskroom/miniconda/base/envs/dfm/bin/python";
+// Conda Python path — update this for your server
+// Find it with: conda activate dfm && which python
+const PYTHON_PATH = process.env.PYTHON_PATH || "/usr/local/Caskroom/miniconda/base/envs/dfm/bin/python";
 
-// ── Validation helpers ──
+// ── Helpers ──
 
 function isAllowedStep(name: string) {
   const n = name.toLowerCase();
@@ -39,78 +38,53 @@ function isValidEmail(email: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
-// ── File storage ──
-
 async function saveUpload(file: File, subdir = "uploads") {
   const bytes = await file.arrayBuffer();
   const buffer = Buffer.from(bytes);
-
   const original = file.name || "upload";
   const ext = path.extname(original) || "";
   const stored = `${randomUUID()}${ext}`;
-
   const dir = path.join(process.cwd(), subdir);
   await mkdir(dir, { recursive: true });
-
   const storedPath = path.join(dir, stored);
   await writeFile(storedPath, buffer);
-
   return { original, stored, storedPath };
 }
 
-// ── Run DFM model ──
-// Spawns: /path/to/conda/python dfm-model/run.py /path/to/file.step
-//
-// JR's run.py writes an HTML report in the dfm-model/ directory
-// named <stem>_report.html (e.g. "a1b2c3d4_report.html").
-//
-// After Python finishes, we:
-// 1. Find that HTML file in dfm-model/
-// 2. Move it to uploads/ so it can be served via /api/files/[name]
-// 3. Store the filename in the DB
+// ── Spawn model (fire-and-forget) ──
 
 function runDfmModel(stepPath: string, jobId: string, stepStored: string) {
   const modelDir = path.join(process.cwd(), "dfm-model");
   const runScript = path.join(modelDir, "run.py");
   const uploadsDir = path.join(process.cwd(), "uploads");
 
-  // The HTML report will be named based on the STEP file stem
-  // e.g. stepStored = "a1b2c3d4-xxxx.step" → report = "a1b2c3d4-xxxx_report.html"
   const stem = path.basename(stepStored, path.extname(stepStored));
   const reportFilename = `${stem}_report.html`;
 
-  const py = spawn(PYTHON_PATH, [runScript, stepPath], {
-    cwd: modelDir, // run from dfm-model/ so Python imports work
-  });
+  const py = spawn(PYTHON_PATH, [runScript, stepPath], { cwd: modelDir });
 
   let stdout = "";
   let stderr = "";
 
-  py.stdout.on("data", (d: Buffer) => {
-    stdout += d.toString();
-  });
-  py.stderr.on("data", (d: Buffer) => {
-    stderr += d.toString();
-  });
+  py.stdout.on("data", (d: Buffer) => { stdout += d.toString(); });
+  py.stderr.on("data", (d: Buffer) => { stderr += d.toString(); });
 
   py.on("close", async (code) => {
     if (code === 0) {
       console.log(`[dfm-model] Completed for job ${jobId}`);
 
+      // Move HTML report from dfm-model/ to uploads/
       try {
-        // Move the HTML report from dfm-model/ to uploads/
         const reportSrc = path.join(modelDir, reportFilename);
         const reportDest = path.join(uploadsDir, reportFilename);
+        await rename(reportSrc, reportDest);
+        console.log(`[dfm-model] Report → uploads/${reportFilename}`);
+      } catch {
+        console.warn(`[dfm-model] Could not move report HTML`);
+      }
 
-        try {
-          await rename(reportSrc, reportDest);
-          console.log(`[dfm-model] Moved report to uploads/${reportFilename}`);
-        } catch (moveErr) {
-          // Report might not exist if model only printed to stdout
-          console.warn(`[dfm-model] Could not move report: ${moveErr}`);
-        }
-
-        // Update DB with status + report filename + JSON if printed to stdout
+      // Store JSON + mark complete
+      try {
         await prisma.uploadJob.update({
           where: { id: jobId },
           data: {
@@ -119,60 +93,29 @@ function runDfmModel(stepPath: string, jobId: string, stepStored: string) {
           },
         });
       } catch (e) {
-        console.error(`[dfm-model] Failed to update DB:`, e);
+        console.error(`[dfm-model] DB update failed:`, e);
       }
     } else {
-      console.error(`[dfm-model] Failed for job ${jobId} (exit code ${code})`);
+      console.error(`[dfm-model] Failed for job ${jobId} (exit ${code})`);
       console.error(stderr);
-
       try {
         await prisma.uploadJob.update({
           where: { id: jobId },
           data: { status: "error" },
         });
       } catch (e) {
-        console.error(`[dfm-model] Failed to update error status:`, e);
+        console.error(`[dfm-model] DB error update failed:`, e);
       }
     }
   });
 }
 
-// ── Run drawing parser ──
-
-function runDrawingParser(drawingPath: string, jobId: string) {
-  const py = spawn(PYTHON_PATH, ["scripts/parse_drawing.py", drawingPath]);
-
-  let parseOutput = "";
-
-  py.stdout.on("data", (d: Buffer) => {
-    parseOutput += d.toString();
-  });
-  py.stderr.on("data", (d: Buffer) => {
-    console.error("[parse_drawing]", d.toString());
-  });
-
-  py.on("close", async (code) => {
-    if (code === 0 && parseOutput.trim()) {
-      try {
-        await prisma.uploadJob.update({
-          where: { id: jobId },
-          data: { drawingParseJson: parseOutput.trim() },
-        });
-        console.log(`[parse_drawing] Stored results for job ${jobId}`);
-      } catch (e) {
-        console.error("[parse_drawing] Failed to store:", e);
-      }
-    }
-  });
-}
-
-// ── Main route handler ──
+// ── Route handler ──
 
 export async function POST(req: Request) {
   try {
     const formData = await req.formData();
 
-    // ── Validate files ──
     const step = formData.get("step");
     const drawing = formData.get("drawing");
 
@@ -182,13 +125,15 @@ export async function POST(req: Request) {
     if (!isAllowedStep(step.name)) {
       return Response.json({ error: "File must be .step or .stp" }, { status: 400 });
     }
+    if (step.size > 50_000_000) {
+      return Response.json({ error: "File too large. Max 50MB." }, { status: 400 });
+    }
 
     const hasDrawing = drawing instanceof File && drawing.size > 0;
     if (hasDrawing && !isAllowedPdf((drawing as File).name)) {
       return Response.json({ error: "Drawing must be a PDF." }, { status: 400 });
     }
 
-    // ── Validate contact ──
     const email = formData.get("email")?.toString().trim().toLowerCase() || "";
     const phone = formData.get("phone")?.toString().trim() || null;
 
@@ -196,13 +141,11 @@ export async function POST(req: Request) {
       return Response.json({ error: "Valid email is required." }, { status: 400 });
     }
 
-    // ── Save files ──
+    // Save files
     const savedStep = await saveUpload(step, "uploads");
-    const savedDrawing = hasDrawing
-      ? await saveUpload(drawing as File, "uploads")
-      : null;
+    const savedDrawing = hasDrawing ? await saveUpload(drawing as File, "uploads") : null;
 
-    // ── Create DB row ──
+    // Create DB row
     const job = await prisma.uploadJob.create({
       data: {
         status: "received",
@@ -216,50 +159,24 @@ export async function POST(req: Request) {
       select: { id: true },
     });
 
-    // ── Run DFM model (fire-and-forget) ──
-    // Pass stepStored so we can find the HTML report by name
+    // Spawn model (returns immediately, Python runs in background)
     runDfmModel(savedStep.storedPath, job.id, savedStep.stored);
 
-    // ── Parse drawing (fire-and-forget) ──
-    if (savedDrawing) {
-      runDrawingParser(savedDrawing.storedPath, job.id);
-    }
-
-    // ── Notify founder ──
+    // Email notification (fire-and-forget)
     resend.emails
       .send({
         from: "notifications@facetquote.com",
         to: "sunjay@facetquote.com",
         subject: `New upload: ${savedStep.original} from ${email}`,
-        text: [
-          `Email: ${email}`,
-          `Phone: ${phone || "—"}`,
-          `STEP: ${savedStep.original} (${savedStep.stored})`,
-          `Drawing: ${savedDrawing ? savedDrawing.original : "—"}`,
-          `Job ID: ${job.id}`,
-        ].join("\n"),
+        text: `Email: ${email}\nPhone: ${phone || "—"}\nSTEP: ${savedStep.original}\nJob ID: ${job.id}`,
       })
-      .catch((e) => {
-        console.error("[resend] Notification failed:", e);
-      });
+      .catch((e) => console.error("[resend]", e));
 
-    // ── Return job ID + report URL ──
-    // The report won't exist yet (model is still running), but the
-    // frontend can poll /api/jobs/[jobId] or just wait and navigate
-    // to the report URL when ready
-    const stem = path.basename(savedStep.stored, path.extname(savedStep.stored));
-    const reportFilename = `${stem}_report.html`;
-
-    return Response.json({
-      jobId: job.id,
-      reportUrl: `/api/files/${reportFilename}`,
-    });
+    // Return immediately — frontend will poll for completion
+    return Response.json({ jobId: job.id });
 
   } catch (err) {
-    console.error("[upload] Unexpected error:", err);
-    return Response.json(
-      { error: "Upload failed. Please try again." },
-      { status: 500 }
-    );
+    console.error("[upload]", err);
+    return Response.json({ error: "Upload failed. Please try again." }, { status: 500 });
   }
 }
