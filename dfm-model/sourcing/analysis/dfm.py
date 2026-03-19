@@ -848,6 +848,67 @@ def analyze_dfm(hole_profiles: list, fillets: list,
     flags.extend(_check_partial_holes(partial_holes or []))
     flags.extend(_check_workholding(fixturing_faces or []))
 
+    # ── Post-annotate flags with fixturing_idx ──
+    # Some checks (hole_ld, small_hole, concave_fillet, ball_nose, partial_hole,
+    # thin_wall) run without fixture context. Build lookup maps from setup_analysis
+    # and annotate any flag that has a hole_idx or fillet_face_idx but no
+    # fixturing_idx.
+    if setup_analysis and setup_analysis.get('fixturings'):
+        # hole profile index → fixturing_idx
+        hole_to_fix = {}
+        # face_idx → fixturing_idx
+        face_to_fix = {}
+        for fix in setup_analysis['fixturings']:
+            fix_idx = fix['fixturing_idx']
+            for feat in fix.get('features', []):
+                if feat['feature_type'] == 'hole':
+                    hole_to_fix[feat['feature_idx']] = fix_idx
+                elif feat['feature_type'] == 'face':
+                    face_to_fix[feat['feature_idx']] = fix_idx
+
+        # Also map fillet face_idx → fixturing_idx from fillet assignments
+        if fillets:
+            for flt in fillets:
+                fi = flt.get('face_idx')
+                fix_i = flt.get('fixturing_idx')
+                if fi is not None and fix_i is not None:
+                    face_to_fix[fi] = fix_i
+
+        for flag in flags:
+            d = flag.get('detail', {})
+            if 'fixturing_idx' in d:
+                continue  # already annotated
+
+            # Try hole_idx → fixturing
+            hi = d.get('hole_idx')
+            if hi is not None and hi in hole_to_fix:
+                d['fixturing_idx'] = hole_to_fix[hi]
+                continue
+
+            # Try fillet_face_idx → fixturing
+            ffi = d.get('fillet_face_idx')
+            if ffi is not None and ffi in face_to_fix:
+                d['fixturing_idx'] = face_to_fix[ffi]
+                continue
+
+            # Try face_idx → fixturing
+            fi = d.get('face_idx')
+            if fi is not None and fi in face_to_fix:
+                d['fixturing_idx'] = face_to_fix[fi]
+                continue
+
+            # Try face_idxs → fixturing (use first match)
+            for fi in d.get('face_idxs', []):
+                if fi in face_to_fix:
+                    d['fixturing_idx'] = face_to_fix[fi]
+                    break
+
+            # Try hole_pair_idxs → fixturing (use first match)
+            for hi in d.get('hole_pair_idxs', []):
+                if hi in hole_to_fix:
+                    d['fixturing_idx'] = hole_to_fix[hi]
+                    break
+
     # Sort: critical first, then warning, then advisory
     _order = {'critical': 0, 'warning': 1, 'advisory': 2}
     flags.sort(key=lambda f: _order[f['severity']])

@@ -147,10 +147,43 @@ def analyze_setups(shape, planar_faces, hole_profiles, pockets, fillets=None,
     # Deduplicate through-hole assignments across fixturings.
     _deduplicate_through_holes(fixturings, hole_profiles)
 
-    # Pocket containment: reassign ambiguous faces (walls, blends) to the
-    # correct fixture based on topological connectivity to confident floor
-    # faces. This replaces ray casting with a robust adjacency-based approach.
-    _reassign_by_adjacency(fixturings, edge_to_faces)
+    # Inject freeform faces into the fixture system BEFORE the adjacency BFS
+    # so they participate in pocket detection. Freeform faces are excluded from
+    # the set-cover (their normals span too wide), so they're not in any fixture
+    # yet. Add them as ambiguous faces in fixture 0 (temporary — BFS will move
+    # them to the correct fixture based on adjacency to confident anchor faces).
+    if freeform_faces and fixturings:
+        for face_idx in freeform_faces:
+            # Don't double-assign if somehow already present
+            already = any(
+                any(ft['feature_type'] == 'face' and ft['feature_idx'] == face_idx
+                    for ft in f['features'])
+                for f in fixturings
+            )
+            if already:
+                continue
+            fixturings[0]['features'].append({
+                'feature_type':          'face',
+                'feature_idx':           face_idx,
+                'constraint_direction':  (0, 0, 0),  # no meaningful normal
+                'angular_deviation_deg': 90.0,
+                'concern_level':         None,
+                'concern_reason':        None,
+            })
+            fixturings[0]['feature_count'] = len(fixturings[0]['features'])
+            logger.debug(f"  Freeform face {face_idx}: injected into fixture 0 for adjacency BFS")
+
+    # Pocket containment: reassign faces to the correct fixture.
+    # Phase 1: void-ray test downgrades "confident" faces that are enclosed
+    #          inside pockets (can't be reached from their assigned approach).
+    # Phase 2: adjacency BFS propagates from true confident faces through
+    #          ambiguous/downgraded faces to assign them correctly.
+    # Freeform faces injected above have dot=0 → always ambiguous → BFS will
+    # route them to the fixture that owns their adjacent pocket walls/floor.
+    _reassign_by_adjacency(fixturings, edge_to_faces, shape=shape,
+                           planar_faces=planar_faces,
+                           freeform_face_idxs=set(freeform_faces.keys()) if freeform_faces else set(),
+                           hole_profiles=hole_profiles)
 
     # Remove fixturings that ended up with no features after deduplication.
     fixturings = [f for f in fixturings if f['feature_count'] > 0]
@@ -160,7 +193,10 @@ def analyze_setups(shape, planar_faces, hole_profiles, pockets, fillets=None,
     # Upgrade special-fixture classifications to 5-axis-indexed where needed.
     _upgrade_special_to_indexed(fixturings)
 
-    # Upgrade fixturings with undercut freeform surfaces to 5-axis-continuous.
+    # Check if any fixture with freeform faces needs 5-axis-continuous.
+    # The freeform face is now in the CORRECT fixture (from BFS). We only
+    # need to check whether that fixture requires continuous tilting — we
+    # don't need to pick which fixture gets the face (that's already done).
     _upgrade_freeform_to_continuous(fixturings, freeform_faces)
 
     # Flag non-principal fixturings driven by large faces — surface quality
@@ -1202,23 +1238,39 @@ def _upgrade_freeform_to_continuous(fixturings, freeform_faces):
         if not normals:
             continue
 
-        # Find fixturing whose approach vector best aligns with this face's normals.
-        # "Best" = highest average dot product across all sampled normals.
-        # This is the fixturing that would naturally machine this surface.
+        # Find which fixturing already has this face (assigned by adjacency BFS).
+        # If not found in any fixture, fall back to best normal alignment.
         best_fixing_idx = None
-        best_avg_dot    = -float('inf')
+        for f in fixturings:
+            for feat in f.get('features', []):
+                if feat['feature_type'] == 'face' and feat['feature_idx'] == face_idx:
+                    best_fixing_idx = f['fixturing_idx']
+                    break
+            if best_fixing_idx is not None:
+                break
 
-        for fix_idx, av in approach_vecs.items():
-            avg_dot = sum(
-                nx * av[0] + ny * av[1] + nz * av[2]
-                for nx, ny, nz in normals
-            ) / len(normals)
-            if avg_dot > best_avg_dot:
-                best_avg_dot    = avg_dot
-                best_fixing_idx = fix_idx
+        if best_fixing_idx is None:
+            # Fallback: pick fixture by best average normal alignment
+            best_avg_dot = -float('inf')
+            for fix_idx, av in approach_vecs.items():
+                avg_dot = sum(
+                    nx * av[0] + ny * av[1] + nz * av[2]
+                    for nx, ny, nz in normals
+                ) / len(normals)
+                if avg_dot > best_avg_dot:
+                    best_avg_dot    = avg_dot
+                    best_fixing_idx = fix_idx
 
         if best_fixing_idx is None:
             continue
+
+        av = approach_vecs.get(best_fixing_idx)
+        if av is None:
+            continue
+        best_avg_dot = sum(
+            nx * av[0] + ny * av[1] + nz * av[2]
+            for nx, ny, nz in normals
+        ) / len(normals)
 
         # A freeform face requires 5-axis-continuous only if its normals vary
         # in genuinely 3D fashion — i.e. the surface has curvature that causes
@@ -1268,7 +1320,9 @@ def _upgrade_freeform_to_continuous(fixturings, freeform_faces):
                     f"spread={max_spread:.1f}°)"
                 )
                 f['setup_type']    = '5-axis-continuous'
-                f['approach_axis'] = None
+                # Keep approach_axis — the primary approach direction doesn't
+                # change just because the tool needs continuous reorientation.
+                # +Z is still +Z, the tool just tilts during cutting.
 
 
 # ---------------------------------------------------------------------------
@@ -1558,175 +1612,559 @@ def _deduplicate_through_holes(fixturings, hole_profiles):
         f['concern_count'] = concern_count
 
 
-def _reassign_by_adjacency(fixturings, edge_to_faces):
+def _reassign_by_adjacency(fixturings, edge_to_faces, shape=None, planar_faces=None,
+                           freeform_face_idxs=None, hole_profiles=None):
     """
-    Reassign ambiguous faces (walls, blends) to the correct fixture using
-    topological connectivity rather than ray casting.
+    Verify and fix face-to-fixture assignments using physical accessibility.
 
-    Principle: a pocket wall shares edges with the pocket floor. The floor
-    is confidently assigned (its normal aligns with the approach direction).
-    All faces in the pocket inherit the floor's fixture assignment.
-
-    This handles all face types uniformly — planar, curved, freeform —
-    because adjacency doesn't depend on surface geometry.
-
-    Algorithm:
-      1. Classify each assigned face as "confident" (floor/ceiling, |dot| ≥ 0.7
-         with approach) or "ambiguous" (wall/blend, |dot| < 0.7).
-      2. Build a face-to-face adjacency graph from edge_to_faces.
-      3. For each ambiguous face, BFS through other ambiguous faces until
-         reaching a confident face. If that confident face is in a different
-         fixture, the ambiguous face is a pocket interior that was assigned
-         to the wrong fixture — move it.
-      4. If an ambiguous face connects to confident faces in multiple
-         fixtures, it's an exterior wall shared between setups — keep
-         the current assignment (set-cover was correct).
+    Phase 1 — INVERTED RAY: classify exterior vs interior.
+              Freeform faces always forced to interior.
+    Phase 2 — HOLE-ANCHORED BFS: holes are reliably assigned by the set-cover
+              (their axis direction is unambiguous). BFS from hole wall faces
+              through interior-only faces assigns the entire pocket to the
+              hole's fixture.
+    Phase 3 — VOID RAY + NEIGHBOR PROPAGATION: any remaining interior faces
+              not reached by hole BFS.
 
     Mutates fixturings in place.
     """
     if not edge_to_faces or len(fixturings) < 2:
         return
+    if shape is None:
+        return
 
-    # Build face-to-face adjacency
-    face_neighbors = {}  # face_idx → set of adjacent face_idxs
-    for edge_faces in edge_to_faces.values():
-        for fi in edge_faces:
+    freeform_face_idxs = freeform_face_idxs or set()
+
+    try:
+        from OCC.Core.IntCurvesFace import IntCurvesFace_ShapeIntersector
+        from OCC.Core.gp import gp_Lin, gp_Pnt, gp_Dir
+        from OCC.Core.Bnd import Bnd_Box
+        from OCC.Core.BRepBndLib import brepbndlib
+        from OCC.Core.BRepClass3d import BRepClass3d_SolidClassifier
+        from OCC.Core.TopAbs import TopAbs_IN
+    except ImportError:
+        return
+
+    planar_by_idx = {}
+    if planar_faces:
+        planar_by_idx = {pf['face_idx']: pf for pf in planar_faces}
+
+    face_list_occ = []
+    explorer = TopExp_Explorer(shape, TopAbs_FACE)
+    while explorer.More():
+        face_list_occ.append(topods.Face(explorer.Current()))
+        explorer.Next()
+
+    intersector = IntCurvesFace_ShapeIntersector()
+    intersector.Load(shape, 1e-6)
+    classifier = BRepClass3d_SolidClassifier(shape)
+
+    bbox = Bnd_Box()
+    brepbndlib.Add(shape, bbox)
+    xmin, ymin, zmin, xmax, ymax, zmax = bbox.Get()
+    bbox_diag = ((xmax-xmin)**2 + (ymax-ymin)**2 + (zmax-zmin)**2) ** 0.5
+
+    # Face-to-face adjacency (includes ALL faces, not just assigned ones)
+    face_neighbors = {}
+    for edge_faces_list in edge_to_faces.values():
+        for fi in edge_faces_list:
             if fi not in face_neighbors:
                 face_neighbors[fi] = set()
-            for fj in edge_faces:
+            for fj in edge_faces_list:
                 if fj != fi:
                     face_neighbors[fi].add(fj)
 
-    # Map face_idx → (fixture_idx, feature_dict, is_confident)
-    FLOOR_DOT = 0.7
-    face_info = {}  # face_idx → {fix_idx, feat, confident}
+    VOID_OFFSET = 5e-4
 
-    for fix in fixturings:
-        ap = fix['approach_vector']
+    # ── Helpers ──
+
+    def _is_directly_accessible(centroid_pt, approach_vec):
+        ap = approach_vec
         ap_mag = (ap[0]**2 + ap[1]**2 + ap[2]**2) ** 0.5
         if ap_mag < 1e-9:
-            continue
+            return False
+        ax, ay, az = ap[0]/ap_mag, ap[1]/ap_mag, ap[2]/ap_mag
+        far = bbox_diag * 3.0
+        start = gp_Pnt(
+            centroid_pt.X() + ax * far,
+            centroid_pt.Y() + ay * far,
+            centroid_pt.Z() + az * far,
+        )
+        neg_dir = gp_Dir(-ax, -ay, -az)
+        ray = gp_Lin(start, neg_dir)
+        intersector.Perform(ray, 0.0, far * 2.0)
+        if intersector.NbPnt() == 0:
+            return False
+        first_pt = intersector.Pnt(1)
+        dx = first_pt.X() - centroid_pt.X()
+        dy = first_pt.Y() - centroid_pt.Y()
+        dz = first_pt.Z() - centroid_pt.Z()
+        return (dx*dx + dy*dy + dz*dz) ** 0.5 < 0.005
 
+    def _get_centroid(fi):
+        pf = planar_by_idx.get(fi)
+        if pf and '_centroid' in pf:
+            return pf['_centroid']
+        if fi < 0 or fi >= len(face_list_occ):
+            return None
+        face = face_list_occ[fi]
+        adaptor = BRepAdaptor_Surface(face)
+        u = (adaptor.FirstUParameter() + adaptor.LastUParameter()) / 2.0
+        v = (adaptor.FirstVParameter() + adaptor.LastVParameter()) / 2.0
+        p = gp_Pnt()
+        d1u = gp_Vec()
+        d1v = gp_Vec()
+        adaptor.D1(u, v, p, d1u, d1v)
+        return p
+
+    def _sample_void_points(fi, n_samples=5):
+        if fi < 0 or fi >= len(face_list_occ):
+            return []
+        face = face_list_occ[fi]
+        adaptor = BRepAdaptor_Surface(face)
+        u0, u1 = adaptor.FirstUParameter(), adaptor.LastUParameter()
+        v0, v1 = adaptor.FirstVParameter(), adaptor.LastVParameter()
+        fracs = [(0.5, 0.5), (0.3, 0.3), (0.7, 0.3), (0.3, 0.7), (0.7, 0.7)]
+        results = []
+        for uf, vf in fracs[:n_samples]:
+            u = u0 + uf * (u1 - u0)
+            v = v0 + vf * (v1 - v0)
+            try:
+                p = gp_Pnt()
+                d1u = gp_Vec()
+                d1v = gp_Vec()
+                adaptor.D1(u, v, p, d1u, d1v)
+                nv = d1u.Crossed(d1v)
+                if nv.Magnitude() < 1e-12:
+                    continue
+                nv.Normalize()
+                probe = gp_Pnt(p.X() + nv.X() * 5e-5, p.Y() + nv.Y() * 5e-5, p.Z() + nv.Z() * 5e-5)
+                classifier.Perform(probe, 1e-6)
+                if classifier.State() == TopAbs_IN:
+                    nv.Reverse()
+                results.append(gp_Pnt(
+                    p.X() + nv.X() * VOID_OFFSET,
+                    p.Y() + nv.Y() * VOID_OFFSET,
+                    p.Z() + nv.Z() * VOID_OFFSET,
+                ))
+            except Exception:
+                continue
+        return results
+
+    def _count_clear_samples(void_pts, approach_vec):
+        ap = approach_vec
+        ap_mag = (ap[0]**2 + ap[1]**2 + ap[2]**2) ** 0.5
+        if ap_mag < 1e-9:
+            return 0
+        ap_dir = gp_Dir(ap[0]/ap_mag, ap[1]/ap_mag, ap[2]/ap_mag)
+        clear = 0
+        for pt in void_pts:
+            ray = gp_Lin(pt, ap_dir)
+            intersector.Perform(ray, 0.0, 1e6)
+            if intersector.NbPnt() == 0:
+                clear += 1
+        return clear
+
+    # ── Build face → fixture map ──
+    face_fixture = {}
+    face_feat = {}
+    for fix in fixturings:
         for feat in fix['features']:
             if feat['feature_type'] != 'face':
                 continue
             fi = feat['feature_idx']
-            fn = feat['constraint_direction']
-            dot = abs(fn[0]*ap[0] + fn[1]*ap[1] + fn[2]*ap[2]) / max(ap_mag, 1e-9)
-            face_info[fi] = {
-                'fix_idx': fix['fixturing_idx'],
-                'feat': feat,
-                'confident': dot >= FLOOR_DOT,
-            }
+            face_fixture[fi] = fix['fixturing_idx']
+            face_feat[fi] = feat
 
-    # For each ambiguous face, BFS to find which confident faces it connects to
-    from collections import deque
+    # ══════════════════════════════════════════════════════════════════════
+    # PHASE 1 — INVERTED RAY: classify exterior vs interior
+    # Freeform faces ALWAYS interior (their curved surface can face outward
+    # from some angle, making inverted ray falsely classify them as exterior)
+    # ══════════════════════════════════════════════════════════════════════
+    exterior = set()
+    interior = set()
 
-    moves = []  # list of (face_idx, from_fix_idx, to_fix_idx)
+    # All 6 principal axes for exterior testing — not just fixture approaches.
+    # A face can be exterior (directly accessible) from a direction that has
+    # no fixture. E.g., face 1 (right side, normal +X) is the first hit from
+    # +X, but there's no +X fixture. It's still exterior — the hole BFS must
+    # not flood through it.
+    all_test_dirs = [(0,0,1), (0,0,-1), (0,1,0), (0,-1,0), (1,0,0), (-1,0,0)]
+    # Also add non-principal fixture approaches
+    for fix in fixturings:
+        av = fix['approach_vector']
+        if _mag(av) > 1e-9:
+            nav = _norm(av)
+            if all(_angle_deg(nav, d) > 5.0 for d in all_test_dirs):
+                all_test_dirs.append(nav)
 
-    for fi, info in face_info.items():
-        if info['confident']:
-            continue  # already confidently assigned
-
-        # BFS from this ambiguous face through other ambiguous faces
-        # until we reach confident faces (anchor points)
-        visited = {fi}
-        queue = deque(face_info.get(n, {}).get('fix_idx') is not None and n
-                      for n in face_neighbors.get(fi, set()))
-
-        # Restart BFS properly
-        visited = {fi}
-        queue = deque()
-        for n in face_neighbors.get(fi, set()):
-            if n not in visited:
-                queue.append(n)
-                visited.add(n)
-
-        anchor_fixtures = set()  # fixture indices of confident faces we reach
-
-        while queue:
-            current = queue.popleft()
-            curr_info = face_info.get(current)
-
-            if curr_info is not None and curr_info['confident']:
-                # Reached a confident face — record its fixture
-                anchor_fixtures.add(curr_info['fix_idx'])
-                continue  # don't traverse through confident faces
-
-            # Not a confident assigned face — might be unassigned (hole wall,
-            # chamfer) or another ambiguous face. Continue BFS.
-            for n in face_neighbors.get(current, set()):
-                if n not in visited:
-                    visited.add(n)
-                    queue.append(n)
-
-        # Decision: should this face move?
-        if len(anchor_fixtures) == 1:
-            target_fix = next(iter(anchor_fixtures))
-            if target_fix != info['fix_idx']:
-                # All connected confident faces are in a different fixture
-                # → this is a pocket interior assigned to the wrong fixture
-                moves.append((fi, info['fix_idx'], target_fix))
-        # If anchor_fixtures is empty or has multiple fixtures:
-        # - Empty: isolated face, keep current assignment
-        # - Multiple: exterior face shared between setups, keep current
-
-    if not moves:
-        return
-
-    # Execute moves
-    fix_by_idx = {f['fixturing_idx']: f for f in fixturings}
-
-    for fi, from_idx, to_idx in moves:
-        src = fix_by_idx[from_idx]
-        dst = fix_by_idx[to_idx]
-
-        # Find and remove from source
-        feat = None
-        new_features = []
-        for f in src['features']:
-            if f['feature_type'] == 'face' and f['feature_idx'] == fi:
-                feat = f
-            else:
-                new_features.append(f)
-        src['features'] = new_features
-        src['feature_count'] = len(new_features)
-
-        if feat is None:
+    for fi in list(face_fixture.keys()):
+        # Freeform faces: forced interior — inverted ray unreliable because
+        # part of the B-spline surface faces outward
+        if fi in freeform_face_idxs:
+            interior.add(fi)
+            logger.debug(f"    Face {fi}: freeform → forced interior")
             continue
 
-        # Recompute concern for target fixture
-        tap = dst['approach_vector']
-        tap_mag = (tap[0]**2 + tap[1]**2 + tap[2]**2) ** 0.5
-        fn = feat['constraint_direction']
-        dot = abs(fn[0]*tap[0] + fn[1]*tap[1] + fn[2]*tap[2]) / max(tap_mag, 1e-9)
-        dev = math.degrees(math.acos(min(max(dot, -1.0), 1.0)))
-        level, reason = _concern('face', fi, dev)
+        centroid = _get_centroid(fi)
+        if centroid is None:
+            interior.add(fi)
+            continue
 
-        new_feat = {
-            'feature_type':          'face',
-            'feature_idx':           fi,
-            'constraint_direction':  fn,
-            'angular_deviation_deg': round(dev, 2),
-            'concern_level':         level,
-            'concern_reason':        reason,
-        }
-        dst['features'].append(new_feat)
-        dst['feature_count'] = len(dst['features'])
+        # Test ALL directions — if face is first hit from ANY, it's exterior
+        is_ext = False
+        for test_dir in all_test_dirs:
+            if _is_directly_accessible(centroid, test_dir):
+                is_ext = True
+                break
 
-        logger.debug(
-            f"    Face {fi}: moved from fixture {from_idx} -> {to_idx} "
-            f"(adjacency to confident floor)"
-        )
+        if is_ext:
+            exterior.add(fi)
+        else:
+            interior.add(fi)
 
-    # Recompute concern counts
-    logger.info(f"  Adjacency check: {len(moves)} faces reassigned to correct pocket fixture")
-    for f in fixturings:
-        cc = {"advisory": 0, "warning": 0, "critical": 0}
-        for ft in f['features']:
-            if ft['concern_level']:
-                cc[ft['concern_level']] += 1
-        f['concern_count'] = cc
+    logger.debug(f"  Phase 1 (inverted ray): {len(exterior)} exterior, {len(interior)} interior")
+
+    # ══════════════════════════════════════════════════════════════════════
+    # PHASE 2 — HOLE-ANCHORED BFS
+    # Holes are the most reliably assigned features (axis direction is
+    # unambiguous). Hole wall faces are OCC faces adjacent to the hole bore.
+    # BFS from hole wall faces through interior-only faces assigns the
+    # entire pocket to the hole's fixture.
+    # ══════════════════════════════════════════════════════════════════════
+    total_moved = 0
+    verified = set(exterior)
+
+    # Build hole_face → fixture_idx mapping from hole profiles.
+    # In the set-cover, holes are indexed by their position in hole_profiles
+    # (feature_idx = enumerate index). Match this to find which fixture owns each hole.
+    hole_face_to_fix = {}
+    if hole_profiles:
+        for hp_idx, hp in enumerate(hole_profiles):
+            # Find which fixture owns this hole by matching feature_idx = hp_idx
+            hole_fix_idx = None
+            for fix in fixturings:
+                for feat in fix['features']:
+                    if feat['feature_type'] == 'hole' and feat['feature_idx'] == hp_idx:
+                        hole_fix_idx = fix['fixturing_idx']
+                        break
+                if hole_fix_idx is not None:
+                    break
+
+            if hole_fix_idx is not None:
+                for fi in hp.get('face_idxs', []):
+                    hole_face_to_fix[fi] = hole_fix_idx
+                logger.debug(f"    Hole {hp_idx} (faces {hp.get('face_idxs', [])}) → fixture {hole_fix_idx}")
+
+    from collections import deque
+
+    bfs_assigned = set()
+
+    # ── Pass A: Hole-anchored BFS (highest reliability) ──
+    # For BLIND holes: seed all interior neighbors (the pocket is one-sided).
+    # For THROUGH holes: only seed neighbors on the ENTRY side. Through hole
+    # bores span the entire part — BFS from both sides would pull features
+    # from the wrong fixture (e.g., countersink entry on -Y, but bore exit
+    # neighbors on +Y get pulled to -Y).
+    if hole_face_to_fix and hole_profiles:
+        queue = deque()
+        opening_bridges = set()
+
+        # Build per-hole metadata for side filtering
+        hole_meta = {}  # hole face_idx → (approach_dir, axis_midpoint)
+        for hp_idx, hp in enumerate(hole_profiles):
+            approach = hp.get('approach_direction') or hp.get('axis_direction')
+            if not approach or _mag(approach) < 1e-6:
+                continue
+            approach_n = _norm(approach)
+            is_through = hp.get('is_through', False)
+
+            # Axis midpoint: average of v_min and v_max along the axis
+            axis_loc = hp.get('axis_location')
+            gpa = hp.get('get_point_along_axis')
+            if axis_loc and gpa:
+                v_min = hp.get('v_min_overall', 0)
+                v_max = hp.get('v_max_overall', 0)
+                mid_pt = gpa((v_min + v_max) / 2.0)
+                mid = (mid_pt.X(), mid_pt.Y(), mid_pt.Z())
+            else:
+                mid = axis_loc if axis_loc else None
+
+            for fi in hp.get('face_idxs', []):
+                hole_meta[fi] = {
+                    'approach': approach_n,
+                    'midpoint': mid,
+                    'is_through': is_through,
+                    'fix_idx': hole_face_to_fix.get(fi),
+                }
+
+        def _is_entry_side(neighbor_fi, hole_info):
+            """For through holes, check if neighbor is on the entry (approach) side."""
+            if not hole_info['is_through']:
+                return True  # blind holes: all neighbors are valid
+            if hole_info['midpoint'] is None:
+                return True  # no axis info: allow all
+
+            nb_centroid = _get_centroid(neighbor_fi)
+            if nb_centroid is None:
+                return True
+
+            mid = hole_info['midpoint']
+            ap = hole_info['approach']
+            # Vector from hole midpoint to neighbor centroid
+            dx = nb_centroid.X() - mid[0]
+            dy = nb_centroid.Y() - mid[1]
+            dz = nb_centroid.Z() - mid[2]
+            # Dot with approach direction: positive = entry side
+            dot = dx * ap[0] + dy * ap[1] + dz * ap[2]
+            return dot > 0
+
+        for hole_fi, fix_idx in hole_face_to_fix.items():
+            h_meta = hole_meta.get(hole_fi)
+            for nb in face_neighbors.get(hole_fi, set()):
+                # Side filter: for through holes, only seed entry-side neighbors
+                if h_meta and not _is_entry_side(nb, h_meta):
+                    continue
+
+                if nb in interior and nb not in bfs_assigned:
+                    queue.append((nb, fix_idx))
+                elif nb in exterior:
+                    opening_bridges.add(nb)
+                    # Bridge: seed interior neighbors of the opening face
+                    for nb2 in face_neighbors.get(nb, set()):
+                        if nb2 in interior and nb2 not in bfs_assigned:
+                            # Also check side for bridged neighbors
+                            if h_meta and not _is_entry_side(nb2, h_meta):
+                                continue
+                            queue.append((nb2, fix_idx))
+
+        while queue:
+            fi, fix_idx = queue.popleft()
+            if fi in bfs_assigned or fi in exterior:
+                continue
+
+            if face_fixture.get(fi) != fix_idx:
+                face_fixture[fi] = fix_idx
+                total_moved += 1
+                logger.debug(f"    Face {fi}: hole-anchored BFS → fixture {fix_idx}")
+
+            bfs_assigned.add(fi)
+            verified.add(fi)
+
+            for nb in face_neighbors.get(fi, set()):
+                if nb in interior and nb not in bfs_assigned and nb not in exterior:
+                    queue.append((nb, fix_idx))
+
+        logger.debug(f"  Phase 2A (hole BFS): {len(bfs_assigned)} interior faces, "
+                     f"{len(opening_bridges)} bridge faces")
+
+    # ── Pass B: General pocket opening BFS (for remaining interior faces) ──
+    # Only runs on interior faces NOT already assigned by hole BFS.
+    # Detects exterior faces with 2+ unassigned interior neighbors.
+    remaining_for_opening = interior - bfs_assigned
+
+    if remaining_for_opening:
+        general_openings = {}
+        for ext_fi in exterior:
+            # Count UNASSIGNED interior neighbors only
+            unassigned_nbs = [nb for nb in face_neighbors.get(ext_fi, set())
+                              if nb in remaining_for_opening]
+            if len(unassigned_nbs) < 2:
+                continue
+
+            # Find fixture whose approach matches the opening face's outward normal
+            pf = planar_by_idx.get(ext_fi)
+            fn = None
+            if pf and '_normal_dir' in pf:
+                nd = pf['_normal_dir']
+                fn = (nd.X(), nd.Y(), nd.Z())
+
+            if fn and _mag(fn) > 1e-6:
+                fn_n = _norm(fn)
+                best_fix_idx = None
+                best_dot = 0.3
+                for fix in fixturings:
+                    av = fix['approach_vector']
+                    avm = _mag(av)
+                    if avm < 1e-9:
+                        continue
+                    dot = (fn_n[0]*av[0] + fn_n[1]*av[1] + fn_n[2]*av[2]) / avm
+                    if dot > best_dot:
+                        best_dot = dot
+                        best_fix_idx = fix['fixturing_idx']
+
+                if best_fix_idx is not None:
+                    general_openings[ext_fi] = best_fix_idx
+                    logger.debug(f"    Face {ext_fi}: general pocket opening "
+                                 f"({len(unassigned_nbs)} unassigned nbs, "
+                                 f"normal→fixture {best_fix_idx}, dot={best_dot:.2f})")
+
+        if general_openings:
+            queue = deque()
+            for opening_fi, fix_idx in general_openings.items():
+                verified.add(opening_fi)
+                for nb in face_neighbors.get(opening_fi, set()):
+                    if nb in remaining_for_opening and nb not in bfs_assigned:
+                        queue.append((nb, fix_idx))
+
+            while queue:
+                fi, fix_idx = queue.popleft()
+                if fi in bfs_assigned or fi in exterior:
+                    continue
+
+                if face_fixture.get(fi) != fix_idx:
+                    face_fixture[fi] = fix_idx
+                    total_moved += 1
+                    logger.debug(f"    Face {fi}: general pocket BFS → fixture {fix_idx}")
+
+                bfs_assigned.add(fi)
+                verified.add(fi)
+
+                for nb in face_neighbors.get(fi, set()):
+                    if nb in interior and nb not in bfs_assigned and nb not in exterior:
+                        queue.append((nb, fix_idx))
+
+            logger.debug(f"  Phase 2B (general BFS): {len(bfs_assigned)} total interior assigned")
+
+    logger.debug(f"  Phase 2 total: {len(bfs_assigned)} interior faces assigned, "
+                 f"{len(hole_face_to_fix)} hole-anchored faces")
+
+    # ══════════════════════════════════════════════════════════════════════
+    # PHASE 3 — VOID RAY + NEIGHBOR PROPAGATION for remaining interior faces
+    # ══════════════════════════════════════════════════════════════════════
+    remaining_interior = interior - bfs_assigned
+
+    if remaining_interior:
+        # Pass A: void ray
+        for fi in list(remaining_interior):
+            void_pts = _sample_void_points(fi)
+            if not void_pts:
+                continue
+
+            results = {}
+            for fix in fixturings:
+                n_clear = _count_clear_samples(void_pts, fix['approach_vector'])
+                if n_clear > 0:
+                    results[fix['fixturing_idx']] = n_clear
+
+            current_fix_idx = face_fixture[fi]
+
+            if current_fix_idx in results and len(results) == 1:
+                verified.add(fi)
+                remaining_interior.discard(fi)
+                continue
+
+            clear_fixtures = list(results.keys())
+            if len(clear_fixtures) == 1:
+                target = clear_fixtures[0]
+                if target != current_fix_idx:
+                    face_fixture[fi] = target
+                    total_moved += 1
+                    logger.debug(f"    Face {fi}: void-ray single-clear → fixture {target}")
+                verified.add(fi)
+                remaining_interior.discard(fi)
+            elif len(clear_fixtures) > 1:
+                # Multi-clear: use verified neighbor consensus
+                neighbor_fixtures = {}
+                for nb in face_neighbors.get(fi, set()):
+                    if nb in verified:
+                        nf = face_fixture[nb]
+                        if nf in results:
+                            neighbor_fixtures[nf] = neighbor_fixtures.get(nf, 0) + 1
+
+                if neighbor_fixtures:
+                    best = max(neighbor_fixtures,
+                               key=lambda idx: (neighbor_fixtures[idx], results.get(idx, 0)))
+                    if best != current_fix_idx:
+                        face_fixture[fi] = best
+                        total_moved += 1
+                    logger.debug(f"    Face {fi}: void-ray multi-clear, neighbor → fixture {best}")
+                else:
+                    best = max(results, key=results.get)
+                    if best != current_fix_idx:
+                        face_fixture[fi] = best
+                        total_moved += 1
+                    logger.debug(f"    Face {fi}: void-ray multi-clear, most-samples → fixture {best}")
+                verified.add(fi)
+                remaining_interior.discard(fi)
+
+        # Pass B: neighbor propagation for anything left
+        MAX_ROUNDS = 5
+        for round_num in range(MAX_ROUNDS):
+            changes = 0
+            for fi in list(remaining_interior):
+                neighbor_fixtures = {}
+                for nb in face_neighbors.get(fi, set()):
+                    if nb in verified:
+                        nf = face_fixture[nb]
+                        neighbor_fixtures[nf] = neighbor_fixtures.get(nf, 0) + 1
+
+                if not neighbor_fixtures:
+                    continue
+
+                best = max(neighbor_fixtures, key=neighbor_fixtures.get)
+                if best != face_fixture.get(fi):
+                    face_fixture[fi] = best
+                    total_moved += 1
+                    changes += 1
+                    logger.debug(f"    Face {fi}: neighbor propagation → fixture {best} (round {round_num})")
+
+                verified.add(fi)
+                remaining_interior.discard(fi)
+
+            if changes == 0:
+                break
+
+    if remaining_interior:
+        logger.debug(f"  {len(remaining_interior)} faces unresolved: {sorted(remaining_interior)}")
+
+    # ══════════════════════════════════════════════════════════════════════
+    # APPLY MOVES
+    # ══════════════════════════════════════════════════════════════════════
+    if total_moved > 0:
+        for fix in fixturings:
+            non_face_feats = [ft for ft in fix['features'] if ft['feature_type'] != 'face']
+            new_face_feats = []
+
+            for fi, fix_idx in face_fixture.items():
+                if fix_idx != fix['fixturing_idx']:
+                    continue
+                feat = face_feat.get(fi)
+                if feat is None:
+                    continue
+
+                tap = fix['approach_vector']
+                tap_mag = (tap[0]**2 + tap[1]**2 + tap[2]**2) ** 0.5
+                fn = feat['constraint_direction']
+                fn_mag = (fn[0]**2 + fn[1]**2 + fn[2]**2) ** 0.5
+                if fn_mag > 1e-9 and tap_mag > 1e-9:
+                    dot = abs(fn[0]*tap[0] + fn[1]*tap[1] + fn[2]*tap[2]) / (tap_mag * fn_mag)
+                else:
+                    dot = 0.0
+                dev = math.degrees(math.acos(min(max(dot, -1.0), 1.0)))
+                level, reason = _concern('face', fi, dev)
+
+                new_face_feats.append({
+                    'feature_type':          'face',
+                    'feature_idx':           fi,
+                    'constraint_direction':  fn,
+                    'angular_deviation_deg': round(dev, 2),
+                    'concern_level':         level,
+                    'concern_reason':        reason,
+                })
+
+            fix['features'] = non_face_feats + new_face_feats
+            fix['feature_count'] = len(fix['features'])
+
+            cc = {"advisory": 0, "warning": 0, "critical": 0}
+            for ft in fix['features']:
+                if ft['concern_level']:
+                    cc[ft['concern_level']] += 1
+            fix['concern_count'] = cc
+
+        logger.info(f"  Accessibility verification: {total_moved} faces reassigned "
+                     f"({len(exterior)} ext, {len(bfs_assigned)} hole-BFS, "
+                     f"{len(remaining_interior)} unresolved)")
 
 
 

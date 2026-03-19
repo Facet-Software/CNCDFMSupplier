@@ -41,7 +41,7 @@ function Viewer3D({ selectedFaceIdxs, labelText, labelSev, activeFixture, snapRe
     const el = containerRef.current;
 
     const scene    = new THREE.Scene();
-    scene.background = new THREE.Color(0xf0eeeb);
+    scene.background = new THREE.Color(0xf8f8f8);
     const camera   = new THREE.PerspectiveCamera(45, el.clientWidth / el.clientHeight, 0.01, 100000);
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setPixelRatio(window.devicePixelRatio);
@@ -57,9 +57,9 @@ function Viewer3D({ selectedFaceIdxs, labelText, labelSev, activeFixture, snapRe
 
     // Per-face meshes
     const faceMeshes = {};
-    const MAT_DEFAULT   = () => new THREE.MeshPhongMaterial({ color: 0xd0cbc3, specular: 0x222222, shininess: 18, side: THREE.DoubleSide });
+    const MAT_DEFAULT   = () => new THREE.MeshPhongMaterial({ color: 0xd4d4d4, specular: 0x222222, shininess: 18, side: THREE.DoubleSide });
     const MAT_HIGHLIGHT = () => new THREE.MeshPhongMaterial({ color: 0xf97316, specular: 0x441100, shininess: 30, emissive: new THREE.Color(0x1a0500), side: THREE.DoubleSide });
-    const MAT_DIM       = () => new THREE.MeshPhongMaterial({ color: 0xddd8d1, specular: 0x111111, shininess: 5, side: THREE.DoubleSide });
+    const MAT_DIM       = () => new THREE.MeshPhongMaterial({ color: 0xe0e0e0, specular: 0x111111, shininess: 5, side: THREE.DoubleSide });
     const MAT_FIXTURE   = () => new THREE.MeshPhongMaterial({ color: 0xc7d8f5, specular: 0x1133aa, shininess: 22, side: THREE.DoubleSide });
     const MAT_REST      = () => new THREE.MeshPhongMaterial({ color: 0x34d399, specular: 0x116633, shininess: 28, emissive: new THREE.Color(0x052e16), side: THREE.DoubleSide });
     const MAT_CLAMP     = () => new THREE.MeshPhongMaterial({ color: 0xfbbf24, specular: 0x664400, shininess: 28, emissive: new THREE.Color(0x1c1000), side: THREE.DoubleSide });
@@ -434,7 +434,7 @@ function Viewer3D({ selectedFaceIdxs, labelText, labelSev, activeFixture, snapRe
   const dotColor = SEV_COLOR[labelSev] || "#374151";
 
   return (
-    <div style={{ position: "relative", width: "100%", height: "100%", background: "#f0eeeb" }}>
+    <div style={{ position: "relative", width: "100%", height: "100%", background: "#f8f8f8" }}>
       <div ref={containerRef} style={{ width: "100%", height: "100%" }} />
 
       <svg style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none", overflow: "visible" }}>
@@ -451,14 +451,48 @@ function Viewer3D({ selectedFaceIdxs, labelText, labelSev, activeFixture, snapRe
           maxWidth: 260, boxShadow: "0 2px 8px rgba(0,0,0,0.12)", pointerEvents: "none",
         }}>
           <div style={{ fontSize: 8, fontWeight: 700, letterSpacing: "0.12em", color: SEV_COLOR[labelSev], textTransform: "uppercase", marginBottom: 3 }}>{SEV_LABEL[labelSev] || "INFO"}</div>
-          <div style={{ fontSize: 11, color: "#374151", lineHeight: 1.5, fontFamily: "'IBM Plex Sans', sans-serif" }}>{labelText}</div>
+          <div style={{ fontSize: 11, color: "#374151", lineHeight: 1.5, fontFamily: "'Inter', sans-serif" }}>{labelText}</div>
         </div>
       )}
 
       {activeFixture && !labelText && (
         <div style={{ position: "absolute", bottom: 10, left: 10, background: "rgba(255,255,255,0.95)", border: "1px solid rgba(37,99,235,0.25)", borderLeft: "3px solid #2563eb", borderRadius: 5, padding: "7px 12px", pointerEvents: "none", maxWidth: 280 }}>
           <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.12em", color: "#2563eb", textTransform: "uppercase", marginBottom: 2 }}>FIXTURING {activeFixture.label}</div>
-          <div style={{ fontSize: 10, color: "#374151", marginBottom: 4 }}>{activeFixture.face_idxs.length} surfaces assigned · approach {activeFixture.label}</div>
+          <div style={{ fontSize: 10, color: "#374151", marginBottom: 4 }}>
+            {activeFixture.face_idxs.length} surfaces assigned · approach {activeFixture.label}
+            {activeFixture.setup_type && (
+              <span style={{
+                display: "inline-block", marginLeft: 6, fontSize: 8, fontWeight: 600,
+                padding: "1px 5px", borderRadius: 3, verticalAlign: "middle",
+                background: activeFixture.setup_type.includes("5-axis") ? "#fef3c7" : "#f0fdf4",
+                color: activeFixture.setup_type.includes("5-axis") ? "#92400e" : "#15803d",
+                border: `1px solid ${activeFixture.setup_type.includes("5-axis") ? "#fde68a" : "#bbf7d0"}`,
+                letterSpacing: "0.04em", textTransform: "uppercase",
+              }}>
+                {activeFixture.setup_type.replace(/-/g, " ")}
+              </span>
+            )}
+            {(() => {
+              const [ax, ay, az] = activeFixture.approach_vector;
+              const mag = Math.sqrt(ax*ax + ay*ay + az*az) || 1;
+              const nx = ax/mag, ny = ay/mag, nz = az/mag;
+              // Check if non-principal (label starts with "fix" or has no ± axis prefix)
+              const isPrincipal = /^[+-][XYZ]$/.test(activeFixture.label);
+              if (isPrincipal) return null;
+              // Compute angles from each principal axis
+              const toDeg = r => (r * 180 / Math.PI).toFixed(1);
+              const angX = toDeg(Math.acos(Math.abs(nx)));
+              const angY = toDeg(Math.acos(Math.abs(ny)));
+              const angZ = toDeg(Math.acos(Math.abs(nz)));
+              return (
+                <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9, color: "#6b7280", marginTop: 3 }}>
+                  {angX}° from X · {angY}° from Y · {angZ}° from Z
+                  <br />
+                  vector ({nx.toFixed(3)}, {ny.toFixed(3)}, {nz.toFixed(3)})
+                </div>
+              );
+            })()}
+          </div>
           {activeFixture.workholding && (
             <div style={{ borderTop: "1px solid #e5e7eb", paddingTop: 4, marginTop: 2 }}>
               <div style={{ fontSize: 9, fontWeight: 600, color: "#6b7280", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 3 }}>WORKHOLDING: {activeFixture.workholding.class.replace(/_/g, " ")}</div>
@@ -490,8 +524,8 @@ function Viewer3D({ selectedFaceIdxs, labelText, labelSev, activeFixture, snapRe
 
       {!HAS_GEO && (
         <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 8 }}>
-          <div style={{ fontSize: 11, color: "#9ca3af", fontFamily: "'IBM Plex Mono', monospace" }}>NO GEOMETRY</div>
-          <div style={{ fontSize: 10, color: "#d1cdc7" }}>STEP tessellation unavailable</div>
+          <div style={{ fontSize: 11, color: "#9ca3af", fontFamily: "'JetBrains Mono', monospace" }}>NO GEOMETRY</div>
+          <div style={{ fontSize: 10, color: "#c0c0c0" }}>STEP tessellation unavailable</div>
         </div>
       )}
 
@@ -804,6 +838,143 @@ function App() {
     }
   }
 
+  function buildExcel() {
+    const XLSX = window.XLSX;
+    if (!XLSX) { alert("SheetJS not loaded"); return; }
+    const wb = XLSX.utils.book_new();
+
+    // ── Sheet 1: Summary ──
+    const summary = [
+      ["Facet — Part Analysis Report"],
+      ["File", R.filename],
+      ["Date", new Date(R.analyzed_at).toLocaleString()],
+      ["Machine Classification", R.machine_classification],
+      ["Display Unit", R.display_unit],
+      [],
+      ["Bounding Box"],
+      ["X", R.bounding_box.x, R.unit_label],
+      ["Y", R.bounding_box.y, R.unit_label],
+      ["Z", R.bounding_box.z, R.unit_label],
+      [],
+      ["Volumes"],
+      ["Bounding Box", R.bbox_volume_mm3, "mm³"],
+      ["Solid", R.solid_volume_mm3, "mm³"],
+      ["Machined", R.machined_volume_mm3, "mm³"],
+      ["Material Removal", R.material_removal_pct, "%"],
+      [],
+      ["Counts"],
+      ["Setups", R.fixturing_count],
+      ["Planar Faces", R.planar_faces],
+      ["Total Holes", R.holes ? R.holes.length : 0],
+      ["DFM Flags", R.dfm ? R.dfm.length : 0],
+    ];
+    const wsSummary = XLSX.utils.aoa_to_sheet(summary);
+    wsSummary["!cols"] = [{ wch: 22 }, { wch: 18 }, { wch: 8 }];
+    XLSX.utils.book_append_sheet(wb, wsSummary, "Summary");
+
+    // ── Sheet 2: Setups ──
+    const setupRows = [["Fixture", "Axis", "Setup Type", "Holes", "Planar Faces", "Floors", "Walls", "Tool Changes", "Min Tool Dia", "Workholding", "Critical", "Warning", "Advisory"]];
+    R.fixturings.forEach(f => {
+      setupRows.push([
+        f.id + 1,
+        f.label,
+        f.setup_type,
+        f.holes || 0,
+        f.planar || 0,
+        f.floor || 0,
+        f.wall || 0,
+        f.tool_changes || 0,
+        f.min_tool_dia || "",
+        f.workholding ? f.workholding.class : "",
+        f.concerns ? f.concerns.critical : 0,
+        f.concerns ? f.concerns.warning : 0,
+        f.concerns ? f.concerns.advisory : 0,
+      ]);
+    });
+    const wsSetups = XLSX.utils.aoa_to_sheet(setupRows);
+    wsSetups["!cols"] = [{ wch: 8 }, { wch: 8 }, { wch: 22 }, { wch: 8 }, { wch: 12 }, { wch: 8 }, { wch: 8 }, { wch: 12 }, { wch: 12 }, { wch: 14 }, { wch: 8 }, { wch: 8 }, { wch: 8 }];
+    XLSX.utils.book_append_sheet(wb, wsSetups, "Setups");
+
+    // ── Sheet 3: Holes ──
+    const holeRows = [["ID", "Type", "Thread", `Diameter (${R.unit_label})`, `Depth (${R.unit_label})`, "L/D", "Cone Angle"]];
+    (R.holes || []).forEach(h => {
+      holeRows.push([
+        h.id,
+        h.type,
+        h.thread || "",
+        +(h.radius * 2).toFixed(4),
+        +h.depth.toFixed(4),
+        h.ld ? +h.ld.toFixed(1) : "",
+        h.cone_angle || "",
+      ]);
+    });
+    const wsHoles = XLSX.utils.aoa_to_sheet(holeRows);
+    wsHoles["!cols"] = [{ wch: 6 }, { wch: 20 }, { wch: 12 }, { wch: 14 }, { wch: 14 }, { wch: 8 }, { wch: 10 }];
+    XLSX.utils.book_append_sheet(wb, wsHoles, "Holes");
+
+    // ── Sheet 4: DFM Flags ──
+    const dfmRows = [["Severity", "Category", "Fixture", "Message"]];
+    (R.dfm || []).forEach(d => {
+      dfmRows.push([d.severity, d.code, d.fixturing, d.message]);
+    });
+    const wsDfm = XLSX.utils.aoa_to_sheet(dfmRows);
+    wsDfm["!cols"] = [{ wch: 10 }, { wch: 20 }, { wch: 8 }, { wch: 80 }];
+    XLSX.utils.book_append_sheet(wb, wsDfm, "DFM Flags");
+
+    // ── Sheet 5: Drawing Info (if present) ──
+    if (R.drawing && R.drawing.has_drawing) {
+      const drawRows = [
+        ["Drawing Analysis"],
+        [],
+        ["Material", R.drawing.material || ""],
+        ["Tightest Tolerance", R.drawing.tightest_tolerance != null ? `±${R.drawing.tightest_tolerance}` : ""],
+        ["Tolerance Type", R.drawing.tightest_tolerance_type || ""],
+        ["Datums", (R.drawing.datums || []).join(", ")],
+        ["Surface Finish (General)", (R.drawing.surface_finish_general || []).join(", ")],
+        ["Surface Finish (Individual)", (R.drawing.surface_finish_individual || []).join(", ")],
+        ["Confidence", R.drawing.confidence || ""],
+      ];
+
+      if (R.drawing.gdt && R.drawing.gdt.length > 0) {
+        drawRows.push([], ["GD&T Callouts"]);
+        drawRows.push(["Type", "Tolerance", "Datums"]);
+        R.drawing.gdt.forEach(g => {
+          drawRows.push([g.type, g.tolerance, (g.datums || []).join(" ")]);
+        });
+      }
+
+      if (R.drawing.inline_tolerances && R.drawing.inline_tolerances.length > 0) {
+        drawRows.push([], ["Specific Tolerances"]);
+        drawRows.push(["Nominal", "Plus", "Minus", "Type"]);
+        R.drawing.inline_tolerances.forEach(t => {
+          drawRows.push([t.nominal, t.plus, t.minus, t.type || ""]);
+        });
+      }
+
+      if (R.drawing.general_tolerances) {
+        drawRows.push([], ["General Tolerance Block"]);
+        drawRows.push(["Decimal Places", "Tolerance"]);
+        Object.entries(R.drawing.general_tolerances).filter(([k]) => !isNaN(k)).sort(([a],[b]) => a - b).forEach(([places, val]) => {
+          drawRows.push(["." + "X".repeat(Number(places)), `±${val}`]);
+        });
+      }
+
+      if (R.drawing.process_notes && R.drawing.process_notes.length > 0) {
+        drawRows.push([], ["Process Notes"]);
+        drawRows.push(["Category", "Note"]);
+        R.drawing.process_notes.forEach(n => {
+          drawRows.push([n.category, n.text]);
+        });
+      }
+
+      const wsDraw = XLSX.utils.aoa_to_sheet(drawRows);
+      wsDraw["!cols"] = [{ wch: 24 }, { wch: 18 }, { wch: 12 }, { wch: 12 }];
+      XLSX.utils.book_append_sheet(wb, wsDraw, "Drawing");
+    }
+
+    XLSX.writeFile(wb, `${R.filename.replace(/\.[^.]+$/, '')}_facet_report.xlsx`);
+  }
+
   function selectFaces(faceIdxs, text, sev) {
     if (JSON.stringify(faceIdxs.sort()) === JSON.stringify([...selectedFaceIdxs].sort())) {
       setSelectedFaceIdxs([]); setLabelText(""); setLabelSev("advisory");
@@ -857,68 +1028,83 @@ function App() {
   const toggle = (code) => setExpanded(e => ({ ...e, [code]: !e[code] }));
 
   function SectionHead({ children }) {
-    return <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.14em", textTransform: "uppercase", color: "#6b7280", marginBottom: 8 }}>{children}</div>;
+    return <div style={{ fontSize: 11, fontWeight: 500, letterSpacing: "0.08em", textTransform: "uppercase", color: "#2563eb", marginBottom: 10 }}>{children}</div>;
   }
 
   const isActiveFlag = (items) => items.some(d => d.face_idxs && d.face_idxs.length > 0 && JSON.stringify(d.face_idxs.slice().sort()) === JSON.stringify([...selectedFaceIdxs].sort()));
   const isActiveHole = (h) => h.face_idxs && h.face_idxs.length > 0 && JSON.stringify(h.face_idxs.slice().sort()) === JSON.stringify([...selectedFaceIdxs].sort());
 
   return (
-    <div style={{ background: "#f8f7f4", minHeight: "100vh", fontFamily: "'IBM Plex Sans', system-ui, sans-serif", color: "#1a1a1a" }}>
+    <div style={{ background: "#ffffff", minHeight: "100vh", fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, sans-serif", color: "#111111" }}>
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
         * { box-sizing: border-box; margin: 0; padding: 0; }
-        .clickable-row:hover { background: #f5f3f0 !important; cursor: pointer; }
-        .clickable-row.active { background: #fff7ed !important; outline: 1px solid #fed7aa; }
+        .clickable-row:hover { background: #f8f8f8 !important; cursor: pointer; }
+        .clickable-row.active { background: #eff4ff !important; outline: 1px solid #bfdbfe; }
         @media print { .viewer-card { display: none; } body { background: white; } }
       `}</style>
 
       <div style={{ maxWidth: 860, margin: "0 auto", padding: "40px 40px 60px" }}>
 
         {/* HEADER */}
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 28, paddingBottom: 20, borderBottom: "2px solid #1a1a1a" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 28, paddingBottom: 20, borderBottom: "1px solid #e4e4e4" }}>
           <div>
-            <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.18em", color: "#6b7280", marginBottom: 5, textTransform: "uppercase" }}>Facet — Part Analysis Report</div>
-            <div style={{ fontSize: 22, fontWeight: 600, color: "#1a1a1a", letterSpacing: "-0.01em", marginBottom: 3 }}>{R.filename}</div>
+            <div style={{ fontSize: 12, fontWeight: 500, letterSpacing: "0.08em", color: "#2563eb", marginBottom: 6, textTransform: "uppercase" }}>Facet — Part Analysis Report</div>
+            <div style={{ fontSize: 22, fontWeight: 600, color: "#111111", letterSpacing: "-0.01em", marginBottom: 3 }}>{R.filename}</div>
             <div style={{ fontSize: 11, color: "#9ca3af" }}>{new Date(R.analyzed_at).toLocaleString("en-US", { dateStyle: "long", timeStyle: "short" })}</div>
           </div>
           <div style={{ textAlign: "right", display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 12 }}>
             <div>
               <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.14em", color: "#9ca3af", marginBottom: 4, textTransform: "uppercase" }}>Machine Type</div>
-              <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 16, fontWeight: 500, color: "#1a1a1a" }}>{R.machine_classification.replace(/-/g, " ")}</div>
+              <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 16, fontWeight: 500, color: "#111111" }}>{R.machine_classification.replace(/-/g, " ")}</div>
             </div>
-            <button
-              onClick={buildPDF}
-              disabled={pdfBusy}
-              style={{
-                display: "flex", alignItems: "center", gap: 6,
-                padding: "8px 16px", borderRadius: 5, cursor: pdfBusy ? "wait" : "pointer",
-                background: pdfBusy ? "#f1f5f9" : "#1a1a1a",
-                color: pdfBusy ? "#9ca3af" : "#fff",
-                border: "none", fontFamily: "'IBM Plex Mono', monospace",
-                fontSize: 11, fontWeight: 500, letterSpacing: "0.04em",
-                boxShadow: pdfBusy ? "none" : "0 1px 3px rgba(0,0,0,0.18)",
-              }}
-            >
-              <span style={{ fontSize: 13 }}>{pdfBusy ? "⏳" : "↓"}</span>
-              {pdfBusy ? "GENERATING…" : "EXPORT PDF"}
-            </button>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                onClick={buildExcel}
+                style={{
+                  display: "flex", alignItems: "center", gap: 6,
+                  padding: "8px 16px", borderRadius: 5, cursor: "pointer",
+                  background: "#fff", color: "#111111",
+                  border: "1px solid #e4e4e4", fontFamily: "'JetBrains Mono', monospace",
+                  fontSize: 11, fontWeight: 500, letterSpacing: "0.04em",
+                }}
+              >
+                <span style={{ fontSize: 13 }}>↓</span>
+                EXPORT XLSX
+              </button>
+              <button
+                onClick={buildPDF}
+                disabled={pdfBusy}
+                style={{
+                  display: "flex", alignItems: "center", gap: 6,
+                  padding: "8px 16px", borderRadius: 5, cursor: pdfBusy ? "wait" : "pointer",
+                  background: pdfBusy ? "#f1f5f9" : "#111111",
+                  color: pdfBusy ? "#9ca3af" : "#fff",
+                  border: "none", fontFamily: "'JetBrains Mono', monospace",
+                  fontSize: 11, fontWeight: 500, letterSpacing: "0.04em",
+                  boxShadow: pdfBusy ? "none" : "0 1px 3px rgba(0,0,0,0.18)",
+                }}
+              >
+                <span style={{ fontSize: 13 }}>{pdfBusy ? "⏳" : "↓"}</span>
+                {pdfBusy ? "GENERATING…" : "EXPORT PDF"}
+              </button>
+            </div>
           </div>
         </div>
 
         {/* STAT STRIP */}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 1, marginBottom: 20, background: "#e5e3df", borderRadius: 6, overflow: "hidden" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 1, marginBottom: 20, background: "#e4e4e4", borderRadius: 10, overflow: "hidden" }}>
           {[
             { label: "Setups Required", value: R.fixturing_count, sub: "fixturings" },
             { label: "Bounding Box",    value: `${R.bounding_box.x} × ${R.bounding_box.y} × ${R.bounding_box.z}`, sub: `${R.unit_label}  X · Y · Z` },
             { label: "Holes",          value: R.holes.length, sub: `${R.holes.filter(h=>h.type.startsWith("blind")).length} blind · ${R.holes.filter(h=>h.type.startsWith("through")).length} through` },
             { label: "Planar Faces",   value: R.planar_faces, sub: "flat surfaces" },
-            { label: "Material Removed", value: `${R.material_removal_pct}%`, sub: R.display_unit === "inch" ? `${(R.machined_volume_mm3/16387.1).toFixed(3)} in³ of ${(R.bbox_volume_mm3/16387.1).toFixed(3)} in³` : `${(R.machined_volume_mm3/1000).toFixed(1)} cm³ of ${(R.bbox_volume_mm3/1000).toFixed(1)} cm³`, accent: R.material_removal_pct > 70 ? SEV_COLOR.warning : "#1a1a1a" },
+            { label: "Material Removed", value: `${R.material_removal_pct}%`, sub: R.display_unit === "inch" ? `${(R.machined_volume_mm3/16387.1).toFixed(3)} in³ of ${(R.bbox_volume_mm3/16387.1).toFixed(3)} in³` : `${(R.machined_volume_mm3/1000).toFixed(1)} cm³ of ${(R.bbox_volume_mm3/1000).toFixed(1)} cm³`, accent: R.material_removal_pct > 70 ? SEV_COLOR.warning : "#111111" },
             { label: "DFM Flags",      value: totalFlags, sub: totalFlags === 0 ? "no issues" : `${crits} crit · ${warns} warn · ${advs} adv`, accent: flagColor },
           ].map(({ label, value, sub, accent }) => (
             <div key={label} style={{ background: "#fff", padding: "14px 16px" }}>
               <div style={{ fontSize: 9, fontWeight: 600, letterSpacing: "0.14em", color: "#9ca3af", textTransform: "uppercase", marginBottom: 5 }}>{label}</div>
-              <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 14, fontWeight: 500, color: accent || "#1a1a1a", lineHeight: 1.2, marginBottom: 3 }}>{value}</div>
+              <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 14, fontWeight: 500, color: accent || "#111111", lineHeight: 1.2, marginBottom: 3 }}>{value}</div>
               <div style={{ fontSize: 10, color: "#9ca3af" }}>{sub}</div>
             </div>
           ))}
@@ -926,10 +1112,10 @@ function App() {
 
         {/* INLINE 3D VIEWER */}
         {HAS_GEO && (
-          <div className="viewer-card" style={{ marginBottom: 24, background: "#fff", border: "1px solid #e5e3df", borderRadius: 8, overflow: "hidden" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 16px", background: "#f8f7f4", borderBottom: "1px solid #e5e3df" }}>
+          <div className="viewer-card" style={{ marginBottom: 24, background: "#fff", border: "1px solid #e4e4e4", borderRadius: 10, overflow: "hidden" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 16px", background: "#f8f8f8", borderBottom: "1px solid #e4e4e4" }}>
               <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.14em", textTransform: "uppercase", color: "#6b7280" }}>3D View</div>
-              <div style={{ fontSize: 9, color: "#c4bfb8", fontFamily: "'IBM Plex Mono', monospace" }}>DRAG · SCROLL · RIGHT-DRAG PAN · CLICK FEATURES TO HIGHLIGHT</div>
+              <div style={{ fontSize: 9, color: "#999999", fontFamily: "'JetBrains Mono', monospace" }}>DRAG · SCROLL · RIGHT-DRAG PAN · CLICK FEATURES TO HIGHLIGHT</div>
             </div>
             <div style={{ height: 400 }}>
               <Viewer3D
@@ -951,9 +1137,9 @@ function App() {
 
             {/* SETUPS */}
             <div>
-              <SectionHead>Setup Summary {HAS_GEO && <span style={{ fontWeight: 400, letterSpacing: 0, textTransform: "none", color: "#c4bfb8", fontSize: 9 }}>— click to show axis</span>}</SectionHead>
-              <div style={{ background: "#fff", border: "1px solid #e5e3df", borderRadius: 6, overflow: "hidden" }}>
-                <div style={{ display: "grid", gridTemplateColumns: "44px 1fr 38px 38px 38px 52px", padding: "7px 12px", background: "#f8f7f4", borderBottom: "1px solid #e5e3df" }}>
+              <SectionHead>Setup Summary {HAS_GEO && <span style={{ fontWeight: 400, letterSpacing: 0, textTransform: "none", color: "#999999", fontSize: 10 }}>— click to show axis</span>}</SectionHead>
+              <div style={{ background: "#fff", border: "1px solid #e4e4e4", borderRadius: 10, overflow: "hidden" }}>
+                <div style={{ display: "grid", gridTemplateColumns: "44px 1fr 38px 38px 38px 52px", padding: "7px 12px", background: "#f8f8f8", borderBottom: "1px solid #e4e4e4" }}>
                   {["Axis","Features","Holes","Faces","Flags",""].map((h, i) => (
                     <div key={i} style={{ fontSize: 9, fontWeight: 600, letterSpacing: "0.12em", color: "#9ca3af", textTransform: "uppercase", textAlign: i > 1 ? "right" : "left" }}>{h}</div>
                   ))}
@@ -968,7 +1154,7 @@ function App() {
                       style={{
                         display: "grid", gridTemplateColumns: "44px 1fr 38px 38px 38px 52px",
                         padding: "10px 12px",
-                        borderBottom: i < R.fixturings.length - 1 ? "1px solid #f0ede9" : "none",
+                        borderBottom: i < R.fixturings.length - 1 ? "1px solid #f0f0f0" : "none",
                         alignItems: "center",
                         background: isActiveFix ? "#eff6ff" : "transparent",
                         cursor: HAS_GEO ? "pointer" : "default",
@@ -977,7 +1163,7 @@ function App() {
                       onClick={() => HAS_GEO && toggleFixture(f)}
                     >
                       <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-                        <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 13, fontWeight: 500, color: isActiveFix ? "#2563eb" : "#1a1a1a" }}>{f.label}</div>
+                        <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 13, fontWeight: 500, color: isActiveFix ? "#2563eb" : "#111111" }}>{f.label}</div>
                         {isActiveFix && <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#2563eb" }} />}
                       </div>
                       <div style={{ fontSize: 10, color: "#6b7280" }}>
@@ -991,9 +1177,9 @@ function App() {
                           }}>{f.workholding.class.replace(/_/g, " ").toUpperCase()}</span>
                         )}
                       </div>
-                      <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, textAlign: "right" }}>{f.holes}</div>
-                      <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, textAlign: "right" }}>{f.planar}</div>
-                      <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, fontWeight: tc > 0 ? 600 : 400, color: fc, textAlign: "right" }}>{tc || "—"}</div>
+                      <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12, textAlign: "right" }}>{f.holes}</div>
+                      <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12, textAlign: "right" }}>{f.planar}</div>
+                      <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12, fontWeight: tc > 0 ? 600 : 400, color: fc, textAlign: "right" }}>{tc || "—"}</div>
                       <div style={{ textAlign: "right" }}>
                         {HAS_GEO && (() => {
                           const isSnapped = snappedFixId === f.id;
@@ -1002,7 +1188,7 @@ function App() {
                               onClick={e => { e.stopPropagation(); if (!isActiveFix) toggleFixture(f); snapToFixture(f); }}
                               title="View from tool direction"
                               style={{
-                                fontFamily: "'IBM Plex Mono', monospace", fontSize: 9,
+                                fontFamily: "'JetBrains Mono', monospace", fontSize: 9,
                                 padding: "3px 7px", borderRadius: 4, cursor: "pointer",
                                 background: isSnapped ? "#2563eb" : "#f1f5f9",
                                 color: isSnapped ? "#fff" : "#64748b",
@@ -1020,9 +1206,9 @@ function App() {
 
             {/* HOLES */}
             <div>
-              <SectionHead>Hole Inventory {HAS_GEO && <span style={{ fontWeight: 400, letterSpacing: 0, textTransform: "none", color: "#c4bfb8", fontSize: 9 }}>— click to highlight</span>}</SectionHead>
-              <div style={{ background: "#fff", border: "1px solid #e5e3df", borderRadius: 6, overflow: "hidden" }}>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 58px 60px 44px", padding: "7px 12px", background: "#f8f7f4", borderBottom: "1px solid #e5e3df" }}>
+              <SectionHead>Hole Inventory {HAS_GEO && <span style={{ fontWeight: 400, letterSpacing: 0, textTransform: "none", color: "#999999", fontSize: 10 }}>— click to highlight</span>}</SectionHead>
+              <div style={{ background: "#fff", border: "1px solid #e4e4e4", borderRadius: 10, overflow: "hidden" }}>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 58px 60px 44px", padding: "7px 12px", background: "#f8f8f8", borderBottom: "1px solid #e4e4e4" }}>
                   {["Type", `⌀ (${R.unit_label})`, "Depth", "L/D"].map((h, i) => (
                     <div key={h} style={{ fontSize: 9, fontWeight: 600, letterSpacing: "0.12em", color: "#9ca3af", textTransform: "uppercase", textAlign: i > 0 ? "right" : "left" }}>{h}</div>
                   ))}
@@ -1043,7 +1229,7 @@ function App() {
                         key={h.id}
                         className={hasGeoLink ? `clickable-row${active ? " active" : ""}` : ""}
                         onClick={() => hasGeoLink && selectFaces(h.face_idxs, `${typeLabel} — ⌀${(h.radius*2).toFixed(R.display_unit==="inch"?4:2)} ${R.unit_label}`, "info")}
-                        style={{ display: "grid", gridTemplateColumns: "1fr 58px 60px 44px", padding: "9px 12px", borderBottom: i < R.holes.length - 1 ? "1px solid #f0ede9" : "none", alignItems: "center" }}
+                        style={{ display: "grid", gridTemplateColumns: "1fr 58px 60px 44px", padding: "9px 12px", borderBottom: i < R.holes.length - 1 ? "1px solid #f0f0f0" : "none", alignItems: "center" }}
                       >
                         <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
                           <span style={{ fontSize: 10, fontWeight: 500, color: badgeColor, background: badgeBg, padding: "2px 6px", borderRadius: 3 }}>
@@ -1052,9 +1238,9 @@ function App() {
                           {h.cone_angle && <span style={{ fontSize: 9, color: "#9ca3af" }}>{h.cone_angle}°</span>}
                           {h.thread_pitch && <span style={{ fontSize: 9, color: "#9ca3af" }}>pitch {h.thread_pitch}</span>}
                         </div>
-                        <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, color: "#374151", textAlign: "right" }}>{(h.radius * 2).toFixed(R.display_unit === "inch" ? 4 : 2)}</div>
-                        <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, color: "#374151", textAlign: "right" }}>{h.depth.toFixed(R.display_unit === "inch" ? 4 : 1)}</div>
-                        <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, color: ldColor, textAlign: "right", fontWeight: h.ld >= 4 ? 600 : 400 }}>{h.ld ? `${h.ld}:1` : "—"}</div>
+                        <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, color: "#374151", textAlign: "right" }}>{(h.radius * 2).toFixed(R.display_unit === "inch" ? 4 : 2)}</div>
+                        <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, color: "#374151", textAlign: "right" }}>{h.depth.toFixed(R.display_unit === "inch" ? 4 : 1)}</div>
+                        <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, color: ldColor, textAlign: "right", fontWeight: h.ld >= 4 ? 600 : 400 }}>{h.ld ? `${h.ld}:1` : "—"}</div>
                       </div>
                     );
                   })}
@@ -1065,7 +1251,7 @@ function App() {
           {/* DFM FLAGS */}
           {totalFlags > 0 && (
             <div>
-              <SectionHead>Manufacturing Flags {HAS_GEO && <span style={{ fontWeight: 400, letterSpacing: 0, textTransform: "none", color: "#c4bfb8", fontSize: 9 }}>— click to highlight</span>}</SectionHead>
+              <SectionHead>Manufacturing Flags {HAS_GEO && <span style={{ fontWeight: 400, letterSpacing: 0, textTransform: "none", color: "#999999", fontSize: 10 }}>— click to highlight</span>}</SectionHead>
               <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
                 {groups.map(g => {
                   const sev   = g.severity;
@@ -1096,10 +1282,10 @@ function App() {
                         <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.12em", color: SEV_COLOR[sev], textTransform: "uppercase" }}>{SEV_LABEL[sev]}</div>
                         <div style={{ fontSize: 12, color: "#374151", lineHeight: 1.45 }}>
                           <span style={{ fontWeight: 500 }}>{label}</span>
-                          {!multi && <span style={{ color: "#6b7280", marginLeft: 7, fontFamily: "'IBM Plex Mono', monospace", fontSize: 10 }}>Fix. {g.items[0].fixturing}</span>}
+                          {!multi && <span style={{ color: "#6b7280", marginLeft: 7, fontFamily: "'JetBrains Mono', monospace", fontSize: 10 }}>Fix. {g.items[0].fixturing}</span>}
                           {!open && multi && <span style={{ color: "#9ca3af", marginLeft: 7, fontSize: 11 }}>— {g.items[0].message.length > 65 ? g.items[0].message.slice(0,65)+"…" : g.items[0].message}</span>}
                         </div>
-                        {multi && <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, color: SEV_COLOR[sev], background: SEV_BORDER[sev], padding: "2px 6px", borderRadius: 3, whiteSpace: "nowrap" }}>{g.items.length}</span>}
+                        {multi && <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: SEV_COLOR[sev], background: SEV_BORDER[sev], padding: "2px 6px", borderRadius: 3, whiteSpace: "nowrap" }}>{g.items.length}</span>}
                         {multi && <span style={{ fontSize: 11, color: "#9ca3af", width: 14, textAlign: "center" }}>{open ? "▲" : "▼"}</span>}
                       </div>
                       {/* EXPANDED ITEMS */}
@@ -1121,7 +1307,7 @@ function App() {
                                   background: itemActive ? (sev === "critical" ? "#fee2e2" : sev === "warning" ? "#fef3c7" : "#f3f4f6") : (i % 2 === 0 ? "#fff" : "#fafafa"),
                                 }}
                               >
-                                <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, color: "#9ca3af", paddingTop: 1 }}>Fix. {d.fixturing}</div>
+                                <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: "#9ca3af", paddingTop: 1 }}>Fix. {d.fixturing}</div>
                                 <div style={{ fontSize: 11, color: "#374151", lineHeight: 1.5 }}>{d.message}</div>
                               </div>
                             );
@@ -1151,11 +1337,11 @@ function App() {
           {/* DRAWING INFO — only shown when a drawing PDF was parsed */}
           {R.drawing && R.drawing.has_drawing && (
             <div style={{ marginTop: 24 }}>
-              <SectionHead>Drawing Info <span style={{ fontWeight: 400, letterSpacing: 0, textTransform: "none", color: "#c4bfb8", fontSize: 9 }}>— extracted from PDF</span></SectionHead>
-              <div style={{ background: "#fff", border: "1px solid #e5e3df", borderRadius: 6, overflow: "hidden" }}>
+              <SectionHead>Drawing Info <span style={{ fontWeight: 400, letterSpacing: 0, textTransform: "none", color: "#999999", fontSize: 10 }}>— extracted from PDF</span></SectionHead>
+              <div style={{ background: "#fff", border: "1px solid #e4e4e4", borderRadius: 10, overflow: "hidden" }}>
 
                 {/* Summary row */}
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 1, background: "#e5e3df" }}>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 1, background: "#e4e4e4" }}>
                   {[
                     { label: "Material", value: R.drawing.material || "—" },
                     { label: "Tightest Tolerance", value: R.drawing.tightest_tolerance != null ? `±${R.drawing.tightest_tolerance}` : "—", sub: R.drawing.tightest_tolerance_type || "" },
@@ -1172,7 +1358,7 @@ function App() {
                   ].map(cell => (
                     <div key={cell.label} style={{ background: "#fff", padding: "10px 12px" }}>
                       <div style={{ fontSize: 8, fontWeight: 600, letterSpacing: "0.12em", color: "#9ca3af", textTransform: "uppercase", marginBottom: 3 }}>{cell.label}</div>
-                      <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, color: "#1a1a1a", fontWeight: 500 }}>{cell.value}</div>
+                      <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12, color: "#111111", fontWeight: 500 }}>{cell.value}</div>
                       {cell.sub && <div style={{ fontSize: 9, color: "#6d28d9", marginTop: 2, textTransform: "capitalize" }}>{cell.sub}</div>}
                     </div>
                   ))}
@@ -1180,25 +1366,25 @@ function App() {
 
                 {/* General tolerance block — the title block .XX = ±.01 table */}
                 {R.drawing.general_tolerances && (
-                  <div style={{ borderTop: "1px solid #e5e3df", padding: "10px 12px" }}>
+                  <div style={{ borderTop: "1px solid #e4e4e4", padding: "10px 12px" }}>
                     <div style={{ fontSize: 8, fontWeight: 600, letterSpacing: "0.12em", color: "#9ca3af", textTransform: "uppercase", marginBottom: 6 }}>General Tolerances (Unless Otherwise Specified)</div>
                     <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                       {Object.entries(R.drawing.general_tolerances).filter(([k]) => !isNaN(k)).sort(([a],[b]) => a - b).map(([places, val]) => (
                         <div key={places} style={{ display: "flex", alignItems: "center", gap: 4, background: "#f9fafb", border: "1px solid #e5e7eb", borderRadius: 4, padding: "4px 8px" }}>
-                          <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, color: "#6b7280" }}>{"." + "X".repeat(Number(places))}</span>
-                          <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, color: "#1a1a1a", fontWeight: 500 }}>±{val}</span>
+                          <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: "#6b7280" }}>{"." + "X".repeat(Number(places))}</span>
+                          <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: "#111111", fontWeight: 500 }}>±{val}</span>
                         </div>
                       ))}
                       {R.drawing.general_tolerances.angular_deg != null && (
                         <div style={{ display: "flex", alignItems: "center", gap: 4, background: "#f9fafb", border: "1px solid #e5e7eb", borderRadius: 4, padding: "4px 8px" }}>
-                          <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, color: "#6b7280" }}>Angular</span>
-                          <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, color: "#1a1a1a", fontWeight: 500 }}>±{R.drawing.general_tolerances.angular_deg}°</span>
+                          <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: "#6b7280" }}>Angular</span>
+                          <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: "#111111", fontWeight: 500 }}>±{R.drawing.general_tolerances.angular_deg}°</span>
                         </div>
                       )}
                       {R.drawing.general_tolerances.fractional != null && (
                         <div style={{ display: "flex", alignItems: "center", gap: 4, background: "#f9fafb", border: "1px solid #e5e7eb", borderRadius: 4, padding: "4px 8px" }}>
-                          <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, color: "#6b7280" }}>Fractional</span>
-                          <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, color: "#1a1a1a", fontWeight: 500 }}>±{R.drawing.general_tolerances.fractional}</span>
+                          <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: "#6b7280" }}>Fractional</span>
+                          <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: "#111111", fontWeight: 500 }}>±{R.drawing.general_tolerances.fractional}</span>
                         </div>
                       )}
                     </div>
@@ -1207,13 +1393,13 @@ function App() {
 
                 {/* GD&T frames */}
                 {R.drawing.gdt && R.drawing.gdt.length > 0 && (
-                  <div style={{ borderTop: "1px solid #e5e3df", padding: "10px 12px" }}>
+                  <div style={{ borderTop: "1px solid #e4e4e4", padding: "10px 12px" }}>
                     <div style={{ fontSize: 8, fontWeight: 600, letterSpacing: "0.12em", color: "#9ca3af", textTransform: "uppercase", marginBottom: 6 }}>GD&T Callouts</div>
                     <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                       {R.drawing.gdt.map((g, i) => (
                         <div key={i} style={{ display: "flex", alignItems: "center", gap: 4, background: "#f5f3ff", border: "1px solid #ddd6fe", borderRadius: 4, padding: "4px 8px" }}>
                           <span style={{ fontSize: 10, fontWeight: 600, color: "#6d28d9", textTransform: "capitalize" }}>{g.type.replace(/_/g, " ")}</span>
-                          <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, color: "#374151" }}>{g.tolerance}</span>
+                          <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: "#374151" }}>{g.tolerance}</span>
                           {g.datums && g.datums.length > 0 && (
                             <span style={{ fontSize: 9, color: "#9ca3af" }}>| {g.datums.join(" ")}</span>
                           )}
@@ -1225,11 +1411,11 @@ function App() {
 
                 {/* Inline tolerances */}
                 {R.drawing.inline_tolerances && R.drawing.inline_tolerances.length > 0 && (
-                  <div style={{ borderTop: "1px solid #e5e3df", padding: "10px 12px" }}>
+                  <div style={{ borderTop: "1px solid #e4e4e4", padding: "10px 12px" }}>
                     <div style={{ fontSize: 8, fontWeight: 600, letterSpacing: "0.12em", color: "#9ca3af", textTransform: "uppercase", marginBottom: 6 }}>Specific Tolerances</div>
                     <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                       {R.drawing.inline_tolerances.map((t, i) => (
-                        <div key={i} style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, color: "#374151", background: "#fef3c7", border: "1px solid #fde68a", borderRadius: 4, padding: "3px 7px" }}>
+                        <div key={i} style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: "#374151", background: "#fef3c7", border: "1px solid #fde68a", borderRadius: 4, padding: "3px 7px" }}>
                           {t.nominal} ±{t.plus}
                         </div>
                       ))}
@@ -1239,7 +1425,7 @@ function App() {
 
                 {/* Process notes */}
                 {R.drawing.process_notes && R.drawing.process_notes.length > 0 && (
-                  <div style={{ borderTop: "1px solid #e5e3df", padding: "10px 12px" }}>
+                  <div style={{ borderTop: "1px solid #e4e4e4", padding: "10px 12px" }}>
                     <div style={{ fontSize: 8, fontWeight: 600, letterSpacing: "0.12em", color: "#9ca3af", textTransform: "uppercase", marginBottom: 6 }}>Process Notes</div>
                     <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
                       {R.drawing.process_notes.map((n, i) => (
@@ -1254,7 +1440,7 @@ function App() {
 
                 {/* Confidence + flag */}
                 {R.drawing.flag && (
-                  <div style={{ borderTop: "1px solid #e5e3df", padding: "8px 12px", background: "#fffbeb" }}>
+                  <div style={{ borderTop: "1px solid #e4e4e4", padding: "8px 12px", background: "#fffbeb" }}>
                     <span style={{ fontSize: 10, color: "#92400e" }}>⚠ {R.drawing.flag}</span>
                   </div>
                 )}
@@ -1263,8 +1449,8 @@ function App() {
           )}
 
           {/* FOOTER */}
-          <div style={{ marginTop: 36, paddingTop: 14, borderTop: "1px solid #e5e3df", display: "flex", justifyContent: "flex-end" }}>
-            <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, color: "#d1cdc7" }}>{R.filename}</div>
+          <div style={{ marginTop: 36, paddingTop: 14, borderTop: "1px solid #e4e4e4", display: "flex", justifyContent: "flex-end" }}>
+            <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: "#c0c0c0" }}>{R.filename}</div>
           </div>
 
       </div>
@@ -1313,9 +1499,10 @@ def generate_report_html(report_dict, output_path=None):
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
 </head>
-<body style="margin:0;background:#f8f7f4">
+<body style="margin:0;background:#f8f8f8">
   <div id="root"></div>
   <script>window.__REPORT__ = {report_json};</script>
   <script type="text/babel">{_COMPONENT_JSX}</script>
