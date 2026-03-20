@@ -39,18 +39,18 @@ if __name__ == "__main__":
                 )
 
         report    = to_report_dict(filepath, result, drawing_data=drawing_data)
-        # import json
-        # print(json.dumps(report))
+        import json
+        print(json.dumps(report))
         html_path = generate_report_html(report)
         logging.getLogger(__name__).info(f"Report written → {html_path}")
 
         # Open automatically in the default browser
-        if sys.platform == "darwin":
-            subprocess.Popen(["open", html_path])
-        elif sys.platform.startswith("linux"):
-            subprocess.Popen(["xdg-open", html_path])
-        elif sys.platform == "win32":
-            os.startfile(html_path)
+        # if sys.platform == "darwin":
+            # subprocess.Popen(["open", html_path])
+        # elif sys.platform.startswith("linux"):
+            # subprocess.Popen(["xdg-open", html_path])
+        # elif sys.platform == "win32":
+            # os.startfile(html_path)
 
     except Exception as e:
         logging.getLogger(__name__).exception(f"Error: {e}")
