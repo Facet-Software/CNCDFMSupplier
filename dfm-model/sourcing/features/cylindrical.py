@@ -93,6 +93,67 @@ def detect_cylindrical_features(shape):
                     )
                     face_idx += 1; exp.Next(); continue
 
+                # --- Secondary check: bore wall vs external boss surface ---
+                # The axis midpoint probe can return OUT for a boss exterior when
+                # a central bore runs through the axis (the midpoint is in the
+                # bore void, not in solid material).  Distinguish by probing
+                # points just OUTSIDE the cylinder surface (radially outward):
+                #   bore wall   → outward probes enter solid  (IN)
+                #   boss surface → outward probes enter void  (OUT)
+                # Probe at multiple angles around circumference for robustness —
+                # a single probe can miss if the hole is near the part edge.
+                axis_mid = gpa((v_min + v_max) / 2)
+                radial = gp_Vec(axis_mid, loc)     # axis → surface point
+                rad_mag = radial.Magnitude()
+                if rad_mag > 1e-12:
+                    radial.Normalize()
+                    # Build a perpendicular vector for multi-angle probing
+                    perp = radial.Crossed(dir_vec)
+                    perp_mag = perp.Magnitude()
+                    probe_offset = 5e-4  # 0.5mm in model units
+                    any_in_solid = False
+                    if perp_mag > 1e-12:
+                        perp.Normalize()
+                        # Probe at 4 angles: 0°, 90°, 180°, 270°
+                        for angle_deg in [0, 90, 180, 270]:
+                            a = math.radians(angle_deg)
+                            probe_dir_x = radial.X() * math.cos(a) + perp.X() * math.sin(a)
+                            probe_dir_y = radial.Y() * math.cos(a) + perp.Y() * math.sin(a)
+                            probe_dir_z = radial.Z() * math.cos(a) + perp.Z() * math.sin(a)
+                            # Point on the surface at this angle
+                            surf_pt = gp_Pnt(
+                                axis_mid.X() + probe_dir_x * rad_mag,
+                                axis_mid.Y() + probe_dir_y * rad_mag,
+                                axis_mid.Z() + probe_dir_z * rad_mag,
+                            )
+                            probe_pt = gp_Pnt(
+                                surf_pt.X() + probe_dir_x * probe_offset,
+                                surf_pt.Y() + probe_dir_y * probe_offset,
+                                surf_pt.Z() + probe_dir_z * probe_offset,
+                            )
+                            classifier.Perform(probe_pt, tol)
+                            if classifier.State() == TopAbs_IN:
+                                any_in_solid = True
+                                break
+                    else:
+                        # Fallback: single probe at the UV midpoint direction
+                        probe_outward = gp_Pnt(
+                            loc.X() + radial.X() * probe_offset,
+                            loc.Y() + radial.Y() * probe_offset,
+                            loc.Z() + radial.Z() * probe_offset,
+                        )
+                        classifier.Perform(probe_outward, tol)
+                        any_in_solid = (classifier.State() == TopAbs_IN)
+
+                    if not any_in_solid:
+                        logger.debug(
+                            f"  Skipping full cylinder face {face_idx}: "
+                            f"r={round(radius*1000,2)} mm — axis midpoint in void "
+                            f"but no radial outward probe found solid "
+                            f"(external boss surface with central bore)"
+                        )
+                        face_idx += 1; exp.Next(); continue
+
                 holes.append({
                     "face_idx":           face_idx,
                     "type":               "cylinder",

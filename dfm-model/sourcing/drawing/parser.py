@@ -271,6 +271,12 @@ def _extract_inline_tolerances(text):
         tol = float(raw_tol) if '.' in raw_tol else float('0.' + raw_tol)
         if nom > 1000 or tol > 1.0 or tol == 0.0:
             continue
+        # A bare single-digit integer ≥ 2 after ± (e.g. "1.0±8") is almost
+        # always garbled pdfplumber text (a dimension concatenated with
+        # a different number), not a real tolerance.  Real tolerances are
+        # written as ".8" or "0.8", not just "8".
+        if '.' not in raw_tol and len(raw_tol) == 1 and int(raw_tol) >= 2:
+            continue
         raw = m.group(0)
         if raw not in seen:
             seen.add(raw)
@@ -514,16 +520,23 @@ def _extract_gdt_frames(text):
 
     # Pattern: GD&T symbol + optional Ø + tolerance value + optional datum letters
     # e.g. ⌖ 0.001 A B C  or  ⌖ Ø0.005 A B  or  ⌖Ø.002 A
+    # CRITICAL: datum capture must NOT cross newlines — adjacent text on the
+    # next line (e.g. "Ra 1.6") would be falsely captured as datum letters.
     DIA = r'[Ø\u00d8]'
     for m in re.finditer(
-        rf'([{sym_chars}])\s*{DIA}?\s*(\.?\d+\.?\d*)\s*((?:[A-Z]\s*)*)',
+        rf'([{sym_chars}])[^\S\n]*{DIA}?[^\S\n]*(\.?\d+\.?\d*)[^\S\n]*((?:[A-Z][^\S\n]*)*)',
         text
     ):
         sym = m.group(1)
         tol_val = float(m.group(2))
         datum_text = m.group(3).strip()
-        datum_refs = [L for L in re.findall(r'[A-Z]', datum_text)
-                      if L not in ('X', 'O')]
+        # Deduplicate while preserving order
+        seen_datums = set()
+        datum_refs = []
+        for L in re.findall(r'[A-Z]', datum_text):
+            if L not in ('X', 'O') and L not in seen_datums:
+                seen_datums.add(L)
+                datum_refs.append(L)
 
         gdt_type = _SYMBOL_MAP.get(sym, 'unknown')
 
@@ -556,13 +569,17 @@ def _extract_gdt_frames(text):
 
     for kw_pat, gdt_type in _KEYWORD_MAP.items():
         for m in re.finditer(
-            rf'({kw_pat})\s+(\.?\d+\.?\d*)\s*((?:[A-Z]\s*)*)',
+            rf'({kw_pat})\s+(\.?\d+\.?\d*)[^\S\n]*((?:[A-Z][^\S\n]*)*)',
             text, re.IGNORECASE
         ):
             tol_val = float(m.group(2))
             datum_text = m.group(3).strip()
-            datum_refs = [L for L in re.findall(r'[A-Z]', datum_text)
-                          if L not in ('X', 'O')]
+            seen_datums = set()
+            datum_refs = []
+            for L in re.findall(r'[A-Z]', datum_text):
+                if L not in ('X', 'O') and L not in seen_datums:
+                    seen_datums.add(L)
+                    datum_refs.append(L)
             # Skip if we already captured this via unicode symbol
             already = any(r['type'] == gdt_type and abs(r['tolerance'] - tol_val) < 1e-6
                           for r in results)
@@ -589,6 +606,49 @@ def _extract_gdt_frames(text):
         if r['type'] in _REQUIRES_DATUMS and not r['datum_refs']:
             continue  # these tolerance types always reference datums
         filtered.append(r)
+
+    # --- Rescue pass ---
+    # When pdfplumber fragments a GD&T frame across lines (e.g. the symbol is
+    # on one line and the tolerance value is on the next, mixed with dimension
+    # text), the main regex may grab a dimension as the tolerance and get
+    # filtered out.  For each symbol in the text whose type does NOT appear in
+    # `filtered`, search a window after the symbol for a small value (≤0.1)
+    # that looks like the real tolerance zone.
+    captured_types = {r['type'] for r in filtered}
+    for m_sym in re.finditer(rf'[{sym_chars}]', text):
+        sym = m_sym.group(0)
+        gdt_type = _SYMBOL_MAP.get(sym)
+        if not gdt_type or gdt_type in captured_types:
+            continue
+        # Search in a 120-char window after the symbol for a tolerance value
+        window = text[m_sym.end():m_sym.end() + 120]
+        # Look for small decimal numbers that look like GD&T zones
+        for m_val in re.finditer(
+            r'(?<![Ø\u00d8\d])(\d?\.\d{2,5})(?:\s+|\s*\n\s*)((?:[A-Z](?:\s+[A-Z]){0,2})?)',
+            window
+        ):
+            tol_val = float(m_val.group(1))
+            if tol_val > 0.1 or tol_val < 1e-6:
+                continue
+            datum_text = m_val.group(2).strip()
+            seen_d = set()
+            datum_refs = []
+            for L in re.findall(r'[A-Z]', datum_text):
+                if L not in ('X', 'O') and L not in seen_d:
+                    seen_d.add(L)
+                    datum_refs.append(L)
+            if gdt_type in _REQUIRES_DATUMS and not datum_refs:
+                continue
+            filtered.append({
+                "type":         gdt_type,
+                "symbol":       sym,
+                "tolerance":    tol_val,
+                "diametrical":  False,
+                "datum_refs":   datum_refs,
+                "raw":          f"{sym} {m_val.group(0).strip()}",
+            })
+            captured_types.add(gdt_type)
+            break  # one rescue per symbol type
 
     return filtered
 
@@ -718,10 +778,41 @@ def _extract_surface_finish(text):
         notes.append(m.group(0).strip())
 
     # Explicit Ra with label: "Ra 1.6" or "1.6 Ra" — individual callout
+    # UNLESS it appears on a line with titleblock keywords (MATERIAL, FINISH,
+    # etc.), in which case it's the general surface finish from the titleblock.
+    _TITLEBLOCK_CONTEXT = re.compile(
+        r'(?:MATERIAL|FINISH|SURFACE|TITLE|SIZE|SCALE|DWG|WEIGHT|SHEET'
+        r'|6061|7075|2024|303|304|316|ALUMINUM|ALUMINIUM|STEEL|BRASS|TITANIUM'
+        r'|INCONEL|DELRIN|PEEK|COPPER|BRONZE)',
+        re.IGNORECASE
+    )
     for m in re.finditer(r'Ra\s*(\d+\.?\d*)', text, re.IGNORECASE):
-        individual_values.append(float(m.group(1)))
+        val = float(m.group(1))
+        if val > 50:  # no standard Ra value exceeds ~50 µm
+            continue
+        # Find the line this match is on
+        line_start = text.rfind('\n', 0, m.start()) + 1
+        line_end = text.find('\n', m.end())
+        if line_end == -1:
+            line_end = len(text)
+        line = text[line_start:line_end]
+        if _TITLEBLOCK_CONTEXT.search(line):
+            general_values.append(val)
+        else:
+            individual_values.append(val)
     for m in re.finditer(r'(\d+\.?\d*)\s*Ra\b', text, re.IGNORECASE):
-        individual_values.append(float(m.group(1)))
+        val = float(m.group(1))
+        if val > 50:  # filter out material numbers like "6061 Ra"
+            continue
+        line_start = text.rfind('\n', 0, m.start()) + 1
+        line_end = text.find('\n', m.end())
+        if line_end == -1:
+            line_end = len(text)
+        line = text[line_start:line_end]
+        if _TITLEBLOCK_CONTEXT.search(line):
+            general_values.append(val)
+        else:
+            individual_values.append(val)
 
     # RMS with label: "125 RMS" — could be general or individual depending
     # on context, but if not already captured by general patterns above,
@@ -904,6 +995,10 @@ def _extract_process_notes(text):
                 raw = m.group(0).strip()
                 # Truncate at any title block field label that got concatenated
                 raw = re.split(_TITLE_BLOCK_LABELS, raw, maxsplit=1, flags=re.IGNORECASE)[0].strip()
+                # Detect mid-sentence truncation at line break — pdfplumber
+                # often splits notes that wrap across a titleblock boundary.
+                if raw and re.search(r'\b(?:AND|OR|&)\s*$', raw, re.IGNORECASE):
+                    raw = raw.rstrip() + ' …'
                 if raw:
                     results.append({"category": cat, "text": raw[:80]})
     return results

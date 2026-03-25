@@ -10,7 +10,7 @@
 #      approach direction that a vise can grip. Scored by height,
 #      parallelism, and feature interference.
 #   3. STABILITY — whether the rest face footprint contains the
-#      projected centre of gravity of the part.
+#      projected center of gravity of the part.
 #   4. WORKHOLDING CLASSIFICATION — vise, toe-clamp, soft-jaw, or
 #      custom fixture based on available surfaces.
 #
@@ -78,7 +78,7 @@ def analyze_fixturing_faces(shape, setup_analysis, planar_faces,
     planar_by_idx  = {pf['face_idx']: pf for pf in planar_faces}
     feature_faces  = _build_feature_face_set(hole_profiles, fillets or [],
                                               edge_to_faces=edge_to_faces)
-    part_cog       = _part_centre_of_gravity(shape)
+    part_cog       = _part_center_of_gravity(shape)
 
     results = []
     for fix in setup_analysis['fixturings']:
@@ -367,7 +367,7 @@ def _find_clamp_pairs(planar_faces, approach, feature_faces):
 
 def _check_stability(rest_face, part_cog, approach, planar_by_idx):
     """
-    Check whether the part's centre of gravity, projected onto the rest
+    Check whether the part's center of gravity, projected onto the rest
     face plane along the approach direction, falls within the rest face's
     bounding footprint.
 
@@ -500,7 +500,7 @@ def _classify_workholding(rest_candidates, clamp_pairs, stability, fix):
 
     if not cog_stable and has_any_rest:
         warnings.append(
-            f"Part centre of gravity projects outside rest face footprint "
+            f"Part center of gravity projects outside rest face footprint "
             f"(offset {stability.get('offset_from_center_mm', '?')} mm "
             f"vs face radius {stability.get('face_characteristic_radius_mm', '?')} mm) "
             f"— part will tend to tip, toe clamps or fixture required"
@@ -597,9 +597,9 @@ def _build_feature_face_set(hole_profiles, fillets, edge_to_faces=None):
     return feature_faces
 
 
-def _part_centre_of_gravity(shape):
+def _part_center_of_gravity(shape):
     """
-    Return the part's volumetric centre of gravity as a gp_Pnt (model units).
+    Return the part's volumetric center of gravity as a gp_Pnt (model units).
     Returns None if volume computation fails.
     """
     try:

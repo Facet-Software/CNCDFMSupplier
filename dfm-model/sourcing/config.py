@@ -204,7 +204,7 @@ FIXTURE_CLAMP_MIN_AREA_MM2 = 25.0
 FIXTURE_CLAMP_MIN_HEIGHT_MM = 3.0
 
 # Stability: the rest face's bounding footprint must contain the part's
-# projected centre of gravity. This tolerance (mm) allows the CoG to sit
+# projected center of gravity. This tolerance (mm) allows the CoG to sit
 # slightly outside the footprint before flagging instability.
 FIXTURE_STABILITY_COG_MARGIN_MM = 2.0
 

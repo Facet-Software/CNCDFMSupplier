@@ -805,13 +805,31 @@ def _hemisphere_set_cover(face_normals, hole_profiles, pockets, face_adjacency=N
             # Exception: if a non-principal cluster fits significantly better
             # (e.g. an angled face at dot=1.0 vs a principal at dot=0.707),
             # assign to the non-principal — it genuinely belongs there.
+            #
+            # Among principal fixtures: if a face is a near-floor (dot >= 0.9),
+            # pick the best-aligned fixture.  Otherwise the face is a wall or
+            # angled surface that is side-millable from multiple fixtures.
+            # In that case, prefer the fixture with the most features — walls
+            # belong to the biggest setup, not a small side-hole fixture.
             best_principal_dot = -float('inf')
             best_principal_c   = None
+            principal_candidates = []   # (cluster, dot)
             for c in principal_clusters:
                 dot = n[0]*c['centroid'][0] + n[1]*c['centroid'][1] + n[2]*c['centroid'][2]
-                if _face_covered(dot) and dot > best_principal_dot:
-                    best_principal_dot = dot
-                    best_principal_c   = c
+                if _face_covered(dot):
+                    principal_candidates.append((c, dot))
+                    if dot > best_principal_dot:
+                        best_principal_dot = dot
+                        best_principal_c   = c
+
+            # If the best principal dot is below 0.9 (face is a wall or angled
+            # surface), prefer the fixture with the most members instead.
+            if (best_principal_c is not None and best_principal_dot < 0.9
+                    and len(principal_candidates) > 1):
+                biggest_c = max(principal_candidates,
+                                key=lambda x: (len(x[0]['members']), x[1]))
+                best_principal_c   = biggest_c[0]
+                best_principal_dot = biggest_c[1]
 
             best_nonprincipal_dot = -float('inf')
             best_nonprincipal_c   = None
@@ -1817,6 +1835,40 @@ def _reassign_by_adjacency(fixturings, edge_to_faces, shape=None, planar_faces=N
             if _is_directly_accessible(centroid, test_dir):
                 is_ext = True
                 break
+
+        # ── Fallback: edge midpoint sampling ──
+        # Annular / ring-shaped faces (e.g. a flange bottom with a central
+        # bore) have their centroid inside the bore void.  The inverted ray
+        # to the centroid passes through the bore and never hits the face,
+        # so it gets falsely classified as interior.
+        # Fix: sample up to 6 edge midpoints on the face boundary.  If ANY
+        # is directly accessible, the face is exterior.
+        if not is_ext and fi < len(face_list_occ):
+            from OCC.Core.TopAbs import TopAbs_EDGE
+            from OCC.Core.BRepAdaptor import BRepAdaptor_Curve
+            edge_pts = []
+            edge_exp = TopExp_Explorer(face_list_occ[fi], TopAbs_EDGE)
+            n_sampled = 0
+            while edge_exp.More() and n_sampled < 6:
+                try:
+                    edge = topods.Edge(edge_exp.Current())
+                    curve = BRepAdaptor_Curve(edge)
+                    t_mid = (curve.FirstParameter() + curve.LastParameter()) / 2.0
+                    edge_pts.append(curve.Value(t_mid))
+                    n_sampled += 1
+                except Exception:
+                    pass
+                edge_exp.Next()
+
+            for ept in edge_pts:
+                if is_ext:
+                    break
+                for test_dir in all_test_dirs:
+                    if _is_directly_accessible(ept, test_dir):
+                        is_ext = True
+                        logger.debug(f"    Face {fi}: centroid not accessible, "
+                                     f"but edge midpoint is → exterior")
+                        break
 
         if is_ext:
             exterior.add(fi)
