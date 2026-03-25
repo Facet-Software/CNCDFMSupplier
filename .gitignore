@@ -64,3 +64,6 @@ node_modules/
 # macOS
 .DS_Store
 __MACOSX/
+
+# Sample parts
+dfm-model/Sample_Parts/
