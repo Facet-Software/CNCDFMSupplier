@@ -777,7 +777,7 @@ def _check_workholding(fixturing_faces: list) -> list:
         if stab.get('cog_inside_footprint') is False:
             flags.append(_flag(
                 'warning', 'cog_instability',
-                f"Fixturing {axis}: part centre of gravity projects outside "
+                f"Fixturing {axis}: part center of gravity projects outside "
                 f"datum face footprint (offset "
                 f"{stab.get('offset_from_center_mm', '?')} mm) — "
                 f"part will tend to tip, toe clamps required",

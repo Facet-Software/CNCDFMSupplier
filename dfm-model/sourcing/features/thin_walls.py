@@ -90,7 +90,7 @@ def detect_hole_proximity_walls(hole_profiles):
     For every pair of hole profiles (A, B):
 
     1. AXIS SEPARATION — perpendicular distance between the two axis lines.
-       Parallel axes: centre-to-centre distance in the plane perpendicular
+       Parallel axes: center-to-center distance in the plane perpendicular
        to the shared axis. Non-parallel axes: minimum skew-line distance.
 
     2. WEB THICKNESS — web = axis_separation - r_A - r_B.
@@ -332,7 +332,12 @@ def _method_a_planar_pairs(shape, planar_faces, thin_samples):
             if height_a is None and height_b is None:
                 logger.debug(f"  Pair {pair_label}: SKIP — could not compute height")
                 continue
-            height_mm = max(h for h in [height_a, height_b] if h is not None)
+            valid_heights = [h for h in [height_a, height_b] if h is not None]
+            # Use the SMALLER face's extent — the thin region is bounded by
+            # the overlap area, which cannot exceed the smaller face.
+            # A blind hole floor (Ø8mm) opposite a large bottom face (100mm)
+            # creates a thin section only 8mm wide, not 100mm.
+            height_mm = min(valid_heights)
 
             if height_mm < 1e-3:
                 logger.debug(f"  Pair {pair_label}: SKIP — height {height_mm:.4f} mm too small")
