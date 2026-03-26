@@ -22,7 +22,7 @@ THIN_WALL_CRITICAL_RATIO = 10.0   # flag as critical above this ratio
 
 # Maximum thickness to bother checking — walls thicker than this are never
 # flagged regardless of height.
-THIN_WALL_MAX_THICKNESS_MM = 50.0
+THIN_WALL_MAX_THICKNESS_MM = 3.0
 
 # UV sampling grid density for ray casting on curved faces (N × N per face).
 THIN_WALL_SAMPLE_GRID = 5
