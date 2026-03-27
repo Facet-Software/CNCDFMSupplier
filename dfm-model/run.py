@@ -45,12 +45,12 @@ if __name__ == "__main__":
         logging.getLogger(__name__).info(f"Report written → {html_path}")
 
         # Open automatically in the default browser
-        if sys.platform == "darwin":
-            subprocess.Popen(["open", html_path])
-        elif sys.platform.startswith("linux"):
-            subprocess.Popen(["xdg-open", html_path])
-        elif sys.platform == "win32":
-            os.startfile(html_path)
+        # if sys.platform == "darwin":
+            # subprocess.Popen(["open", html_path])
+        # elif sys.platform.startswith("linux"):
+            # subprocess.Popen(["xdg-open", html_path])
+        # elif sys.platform == "win32":
+            # os.startfile(html_path)
 
     except Exception as e:
         logging.getLogger(__name__).exception(f"Error: {e}")
