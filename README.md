@@ -1,238 +1,91 @@
 # Facet
 
-DFM analysis tool for CNC machine shops. Upload a STEP file (+ optional engineering drawing PDF), get an instant manufacturability report — setups, holes, thin walls, tool access, tolerances, thread detection, DFM flags.
+DFM analysis and quoting tool for CNC machine shops.
 
-**Live at [facetquote.com](https://facetquote.com)**
+![Python](https://img.shields.io/badge/Python-OpenCASCADE-blue) ![Next.js](https://img.shields.io/badge/Frontend-Next.js-black) ![Live](https://img.shields.io/badge/Live-facetquote.com-green)
+
+---
+
+Upload a STEP file and get a structured manufacturability report in under a minute — setups, hole inventory, DFM flags, material removal, and tool access analysis. Optionally attach an engineering drawing PDF to add tolerance extraction, GD&T parsing, and thread matching.
+
+Built for precision job shops (aerospace, medical, semiconductor) where quoting a complex part currently takes 30–90 minutes of manual geometry reasoning. Facet automates the reading and transcription work without replacing the machinist's judgment.
+
+---
+
+## Background
+
+The original idea was a two-sided marketplace for precision CNC sourcing. The core insight: you can describe what a part requires to manufacture — setups, features, tolerances — without exposing the design IP in the raw CAD file. Buyers could solicit competitive bids from new suppliers without sending their geometry to five unknown shops. Nothing does this end-to-end today.
+
+The marketplace has a cold-start problem. We're solving it by sequencing: build the supplier side first as a standalone product that suppliers want independently of any marketplace. Job shops doing 20–30 RFQs per week spend a significant fraction of their estimating labor manually reading STEP files — opening them in CAD, counting setups, mentally flagging thin walls and deep holes. Facet replaces that manual pass, makes pricing objective by grounding quotes in measurable geometry rather than estimator intuition, and catches DFM issues before they become first-article failures.
+
+The target is deliberately not the commodity quoting market (Xometry, Protolabs). It's precision production work — tolerances in the 0.001–0.005" range — where underquoting a 5-axis part as 3-axis is a serious margin problem and DFM issues cause real rework costs.
+
+---
+
+## Long-term vision
+
+Every analysis Facet runs is a structured data record: part geometry fingerprint, feature complexity, setup count, DFM flag profile. At scale, this becomes something more valuable than the quoting tool itself — a dataset that maps hard part features to real supplier behavior.
+
+Which shops consistently underquote complex fixturings? Which flag thin walls that others miss? Which suppliers' quotes correlate with on-time delivery and first-article pass rates? This data doesn't exist anywhere in the market today. Buyers have no objective basis for supplier selection beyond past relationships and reputation.
+
+The endgame is the marketplace the project started as: buyers upload a part, receive an abstracted manufacturability profile (no IP exposure), and get competitive bids from a pre-qualified supplier network ranked by demonstrated competence on comparable geometry. The supplier tool is how we build that network and the dataset that makes the ranking meaningful. By the time we open the buyer side, the supply side is already conditioned.
+
+---
+
+## What it analyzes
+
+- Setup count and fixturing plan — approach directions, machine type classification (3-axis vs 5-axis indexed)
+- Full hole inventory — through, blind, counterbore, countersink — with diameter, depth, and L/D ratios
+- DFM flags — deep holes, thin walls, sharp internal corners, small holes, proximity webs — with severity levels (critical / warning / advisory)
+- Material removal % — solid volume vs bounding box, drives cycle time estimates
+- Minimum tool diameter per fixturing — tightest geometric constraint on tooling per setup
+- Drawing parser (optional) — tolerance extraction, GD&T callouts, thread detection matched to STEP geometry
 
 ---
 
 ## Architecture
 
-Everything runs on one Railway server. Next.js handles the frontend and API routes. The upload route spawns JR's Python model directly via conda. No microservices, no split deployment.
+Single Railway server. Next.js handles the frontend and API routes. The upload route spawns the Python DFM engine directly via conda — no microservices, no separate model server.
 
 ```
-app/
-├── page.tsx                          # Landing page (upload form)
-├── layout.tsx
-├── globals.css
-├── api/
-│   ├── upload/
-│   │   └── route.ts                  # Saves files, creates DB row, spawns model
-│   ├── files/
-│   │   └── [name]/
-│   │       └── route.ts              # Serves HTML reports + uploaded files
-│   └── jobs/
-│       └── [jobID]/
-│           └── route.ts              # Polling endpoint (frontend checks every 2s)
-├── lib/
-│   └── prisma.ts                     # Prisma client (Turso/LibSQL adapter)
-│
-dfm-model/                            # Python DFM engine (OpenCASCADE)
-│   ├── run.py                        # Entry point: python run.py file.step [drawing.pdf]
-│   ├── sourcing/
-│   │   ├── pipeline.py               # Main pipeline + drawing processing
-│   │   ├── loader.py                 # STEP file loader
-│   │   ├── config.py
-│   │   ├── analysis/                 # Setup, DFM flags, tool access, feature summary
-│   │   ├── classify/                 # Hole classification
-│   │   ├── features/                 # Planar, cylindrical, thin walls, pockets
-│   │   ├── reporting/                # HTML report + summary generation
-│   │   └── utils/                    # Geometry helpers
-│   └── parse_drawing.py              # PDF tolerance + thread parser
-│
-prisma/
-│   └── schema.prisma
-│
-uploads/                              # UUID-named files + HTML reports (gitignored)
-Dockerfile                            # Railway deployment (Node + conda + pythonocc-core)
+STEP + PDF upload
+     ↓
+POST /api/upload — saves files, spawns python run.py, returns jobId immediately
+     ↓
+Frontend polls /api/jobs/[jobID] every 2s
+     ↓
+Python (OpenCASCADE) — geometric analysis, HTML report generation
+     ↓
+Report served at /api/files/[uuid] — 3D viewer, setup summary, DFM flags, PDF + Excel export
 ```
+
+Stack: `pythonocc-core` · `pdfplumber` · Next.js · Prisma · Turso (LibSQL) · Railway · Docker
 
 ---
 
-## User Flow
+## DFM engine
 
-```
-1. Shop owner uploads STEP + email (optional: drawing PDF) at facetquote.com
-
-2. POST /api/upload
-   ├── Saves STEP + PDF to /uploads with UUID names
-   ├── Creates UploadJob row in Turso (status: "received")
-   ├── Spawns: python dfm-model/run.py /uploads/uuid.step [/uploads/uuid.pdf]
-   └── Returns { jobId } immediately
-
-3. Frontend shows "Analyzing your part..." spinner
-   └── Polls GET /api/jobs/[jobID] every 2 seconds
-
-4. Python finishes in background:
-   ├── Prints JSON report to stdout → route.ts captures it
-   ├── Writes HTML report to dfm-model/ → route.ts moves to uploads/
-   ├── Stores JSON in Turso dfmResultJson column
-   └── Updates status → "complete"
-
-5. Poll returns { status: "complete", reportUrl } → browser redirects to HTML report
-
-6. GET /api/files/uuid_report.html serves JR's interactive report
-   └── 3D viewer, setup summary, hole inventory, DFM flags, PDF export
-```
-
----
-
-## DFM Engine
-
-Full geometric analysis from a STEP file. Python + OpenCASCADE (pythonocc-core).
-
-```
+```bash
 conda activate dfm
 python run.py /path/to/file.step [/path/to/drawing.pdf]
 ```
 
-**Capabilities:**
+Pure geometric analysis — no ML, no heuristics. Reads B-Rep topology directly from the STEP file via OpenCASCADE.
 
-- Machine classification (3-axis standard vs 5-axis indexed)
-- Setup / fixturing count with per-setup breakdown
-- Hole inventory (through, blind, counterbore, countersink) with L/D ratios
-- Small hole detection (below 1.5mm and 0.8mm thresholds)
-- Deep hole detection (L/D flags at 3:1, 6:1, 10:1)
-- Volume removal percentage (bounding box vs solid)
-- Thin wall detection (geometry-based + hole proximity)
-- Deep pocket flagging
-- Minimum tool diameter per fixturing
-- Fillet analysis (concave/convex, radius thresholds)
-- Estimated tool changes per fixturing
-- DFM flags (critical / warning / advisory)
-- Bounding box dimensions
-- Tool access / wall gap analysis
-
-**Drawing Parser (optional PDF input):**
-
-- Tolerance extraction from engineering drawing PDFs
-- Thread detection and matching to holes in the STEP model
-- GD&T parsing
-- Confidence scoring
+> For a full technical breakdown of the pipeline, feature extraction algorithms, fixturing logic, known limitations, and report schema — see [FACET.md](FACET.md).
 
 ---
 
-## Database
+## Report output
 
-Turso (LibSQL). One table:
+Self-contained HTML file. No dependencies, opens in any browser.
 
-```prisma
-model UploadJob {
-  id                String   @id @default(uuid())
-  createdAt         DateTime @default(now())
-  status            String   @default("received")
-
-  email             String
-  phone             String?
-
-  stepOriginal      String
-  stepStored        String
-  drawingOriginal   String?
-  drawingStored     String?
-
-  dfmResultJson     String?
-  drawingParseJson  String?
-}
-```
-
-Manage via: `turso db shell facet`
+- Interactive 3D viewer with per-fixturing face highlighting and approach vector visualization
+- Setup table with workholding classification and DFM flag counts per fixture
+- Export to PDF (jsPDF, isometric capture) and Excel (SheetJS, multi-sheet)
 
 ---
 
-## Deployment
+## Status
 
-Everything runs on Railway ($5/mo Hobby plan). Docker container with Node 20 + conda + pythonocc-core.
-
-**Dockerfile handles:**
-- System deps (libgl, libglib for OpenCASCADE)
-- Miniconda install + TOS acceptance
-- conda env `dfm` with python 3.11 + pythonocc-core + pdfplumber
-- Node deps + Next.js build
-- Starts with `npm start`
-
-**Railway env vars:**
-```
-DATABASE_URL=libsql://facet-sunjayshanker.aws-us-east-1.turso.io?authToken=xxx
-RESEND_API_KEY=re_xxx
-PYTHON_PATH=/opt/conda/envs/dfm/bin/python
-```
-
-**Domain:** facetquote.com → Railway via CNAME in Namecheap
-
-**Auto-deploy:** Push to `main` on GitHub → Railway rebuilds and deploys automatically.
-
----
-
-## Local Development
-
-```bash
-# Start dev server
-npm run dev
-
-# Test model directly
-conda activate dfm
-cd dfm-model
-python run.py ../uploads/any-file.step
-
-# Test model with drawing
-python run.py ../uploads/any-file.step ../uploads/any-drawing.pdf
-
-# Check database
-turso db shell facet
-SELECT * FROM UploadJob ORDER BY createdAt DESC LIMIT 5;
-```
-
-**Local conda Python path (Mac):**
-```
-/usr/local/Caskroom/miniconda/base/envs/dfm/bin/python
-```
-
-**Server conda Python path (Railway Docker):**
-```
-/opt/conda/envs/dfm/bin/python
-```
-
----
-
-## .gitignore
-
-```
-.env
-.env.local
-uploads/
-node_modules/
-__pycache__/
-*.pyc
-.DS_Store
-__MACOSX/
-dfm-model/Sample_Parts/
-```
-
----
-
-## Security
-
-**Already handled:**
-- SQL injection — Prisma parameterizes all queries
-- XSS — React escapes output
-- HTTPS — Railway provides this automatically
-- File names — all uploads renamed to UUIDs
-- File size limit — 50MB cap in upload route
-
-**Add when you have real users:**
-- Rate limiting on upload route
-- Per-upload access control on /api/files/[name]
-- Email verification
-- Upload cleanup (cron to delete old files)
-
----
-
-## Design Decisions
-
-- **No auth / no accounts.** Upload and go.
-- **One server.** Next.js + Python on the same Railway box. Simplest possible deployment.
-- **Spawn, not HTTP.** Route.ts spawns python directly. No model server, no fetch between services.
-- **Entire report stored as one JSON blob.** No schema changes when model adds capabilities.
-- **Email required with upload.** How we close the feedback loop.
-- **Drawing optional.** STEP alone generates full value. Drawing adds tolerances + thread matching.
-- **One landing page.** facetquote.com = value prop + upload form. That's it.
+Live at [facetquote.com](https://facetquote.com). No auth, no accounts — upload and go.
